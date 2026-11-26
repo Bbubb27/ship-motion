@@ -1,0 +1,332 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live ship motion</title>
+<style>
+/* VOICE: clear, technical, like a ship's motion report
+   IDEA: a bridge seakeeping display: a Jewel-class hull riding the measured swell, seen three ways
+   PICTURE: 3D corner view (drag to orbit) plus side and bow-on views of one model, cabin 9004 marked
+   COLOUR+TYPE: deep sea page, daylight sea in the views, signal orange for the cabin; Barlow Condensed + Barlow
+   LAYOUT: title + key figures, corner view, side + bow views, controls, traces, notes */
+:root{color-scheme:light dark;--bg:#0a2540;--ink:#eef6ff;--mut:#9fb8d0;--acc:#ff7a3d;--sw:#8fd3ff;--line:#24527d}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Barlow,system-ui,sans-serif;overflow-x:clip}
+.band{padding:clamp(20px,4vw,48px) max(5vw,16px);max-width:1240px;margin:auto}
+h1{font:700 clamp(30px,5vw,48px)/1.05 "Barlow Condensed",sans-serif;margin:0 0 8px;text-wrap:balance}
+h2{font:700 24px/1.1 "Barlow Condensed",sans-serif;margin:0 0 6px}
+.lede{color:var(--mut);max-width:70ch;margin:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:20px}
+.k{border-top:2px solid var(--line);padding-top:8px}.k b{display:block;font:700 30px/1 "Barlow Condensed";white-space:nowrap}.k span{color:var(--mut);font-size:14px}
+.k.hi{border-color:var(--acc)}
+.views{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:14px;margin-top:14px}
+.fig{position:relative;min-height:300px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.v3{background:linear-gradient(#3f8fbf,#9fd3ec 58%,#cfeaf5)}
+#fc{min-height:clamp(320px,52vw,560px);cursor:grab;touch-action:none}#fc:active{cursor:grabbing}
+.fig canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.trace{background:linear-gradient(#0e3156,#0a2540);min-height:220px}
+.cap{position:absolute;left:12px;top:8px;font:600 14px Barlow;color:#0a2540;background:rgba(238,246,255,.8);padding:2px 8px;border-radius:6px;pointer-events:none}
+.lbl{position:absolute;font:700 13px Barlow;color:#fff;background:var(--acc);padding:1px 7px;border-radius:5px;transform:translate(-50%,-150%);pointer-events:none;white-space:nowrap}
+.ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0}
+button,select{font:600 16px Barlow;min-height:44px;padding:0 16px;border-radius:8px;border:1px solid var(--line);background:#12375e;color:var(--ink);cursor:pointer}
+button.on{background:var(--acc);border-color:var(--acc);color:#1b0d05}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--sw);outline-offset:2px}
+input[type=range]{flex:1 1 220px;accent-color:var(--acc);min-height:44px}
+#clock{font:700 22px "Barlow Condensed";white-space:nowrap;width:7ch}
+.leg{display:flex;gap:16px;flex-wrap:wrap;font-size:14px;color:var(--mut);margin-top:8px}.leg i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:6px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+.notes p{margin:4px 0 0;color:var(--mut)}
+#err{display:none;padding:20px;color:var(--ink)}
+@media(max-width:700px){.views{grid-template-columns:minmax(0,1fr)}.fig{min-height:240px}}
+</style>
+<style>
+.bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-top:14px;color:var(--mut);font-size:15px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#e14b4b;margin-right:6px;vertical-align:middle}
+.dot.ok{background:#3ccf86}.dot.warn{background:#f0b429}
+details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;color:var(--ink);min-height:44px;display:flex;align-items:center}
+.map{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:8px}
+.map label{display:grid;gap:4px;font-size:14px}.map select{width:100%}
+#msg{color:#ffd27a;margin:8px 0 0;min-height:1.4em}
+</style></head><body>
+<div class="band">
+<h1>Live ship motion · cabin 9004</h1>
+<p class="lede">Open <b>sensor.html</b> on your phone, tap Start, and type its room code here. Ship motion updates in real time; the sea is rebuilt every 10 s from the last 3 minutes. The first ~30 s are settling time for the filters.</p>
+<div class="bar"><span><span class="dot" id="dot"></span><span id="conn">Connecting…</span></span><span id="rate"></span>
+<label style="display:flex;gap:8px;align-items:center">Room code <input id="room" inputmode="numeric" maxlength="4" style="font:700 20px Barlow,sans-serif;width:5.5ch;min-height:44px;border-radius:8px;border:1px solid var(--line);background:#12375e;color:var(--ink);text-align:center"></label><button id="joinBtn">Connect</button><button id="demoBtn">Demo replay</button></div>
+<p id="msg"></p>
+<div class="kpis">
+<div class="k hi"><b id="k1">–</b><span>heave at your cabin, RMS, last 60 s</span></div>
+<div class="k"><b id="k2">–</b><span>heave of the ship's centre, RMS</span></div>
+<div class="k"><b id="k3">–</b><span>period you feel (encounter)</span></div>
+<div class="k"><b id="k4">–</b><span>pitch RMS</span></div>
+<div class="k"><b id="k5">–</b><span>roll RMS</span></div>
+<div class="k"><b id="k6">–</b><span>sway RMS</span></div>
+</div></div>
+<div class="band" style="padding-top:0">
+<div class="ctl">
+<select id="exa" aria-label="Vertical scale"><option value="1">True scale</option><option value="3">Motion and waves ×3</option><option value="5" selected>Motion and waves ×5</option><option value="10">Motion and waves ×10</option></select>
+<select id="kn" aria-label="Ship speed (assumed)"><option value="0">Ship stopped</option><option value="10">10 kn</option><option value="14">14 kn</option><option value="17" selected>17 kn</option><option value="21">21 kn</option></select>
+<select id="dir" aria-label="Waves come from"><option value="25" selected>Waves from 25° off stbd bow</option><option value="0">Waves from dead ahead</option><option value="-25">Waves from 25° off port bow</option><option value="90">Waves from starboard beam</option><option value="-90">Waves from port beam</option><option value="180">Waves from astern</option></select>
+<button id="reset">Reset view</button>
+</div>
+<p id="wstat" class="lede" style="margin:0 0 12px">Waiting for 40 s of data to build the sea…</p>
+<div class="fig v3" id="fc"><canvas id="cc"></canvas><div class="cap">Corner view from forward-starboard, 45° down · drag to rotate</div><div class="lbl" id="lc">9004</div><div id="err">3D view needs WebGL, which this browser has turned off.</div></div>
+<div class="views">
+<div class="fig v3" id="fs"><canvas id="cs"></canvas><div class="cap">Side cut along the centreline · heave, pitch, surge</div></div>
+<div class="fig v3" id="fb"><canvas id="cb"></canvas><div class="cap">Bow-on cut at midships · heave, roll, sway</div></div>
+</div>
+<div class="fig trace" style="margin-top:14px"><canvas id="tr"></canvas></div>
+<div class="leg"><span><i style="background:var(--acc)"></i>Heave at cabin 9004</span><span><i style="background:#eef6ff"></i>Heave at ship's centre</span><span><i style="background:var(--sw)"></i>Sway (starboard +)</span><span>Feet · last 60 s</span></div>
+<div class="fig trace" style="margin-top:14px;min-height:170px"><canvas id="tr2"></canvas></div>
+<div class="leg"><span><i style="background:#c9a0ff"></i>Pitch (bow up +)</span><span><i style="background:#7ee0b5"></i>Roll (starboard down +)</span><span>Degrees</span></div>
+
+</div>
+<script src="three.min.js"></script>
+<script src="mqtt.min.js"></script>
+<script>
+{
+const $=id=>document.getElementById(id),RAD=Math.PI/180,FT=3.281,DT=0.05;
+/* ---------- live series (20 Hz grid) ---------- */
+const D={t0:0,t:[],hc:[],sc:[],wc:[],pitch:[],roll:[],hp:[],wp:[]};
+const KEEP=200/DT;
+function at(a,t){const n=a.length;if(n<2)return 0;const f=(t-D.t0)/DT;if(f<=0)return a[0];if(f>=n-1)return a[n-1];const i=Math.floor(f),r=f-i;return a[i]*(1-r)+a[i+1]*r}
+function fit2(c){const r=c.getBoundingClientRect(),d=devicePixelRatio||1;if(c.width!==Math.round(r.width*d)){c.width=Math.round(r.width*d);c.height=Math.round(r.height*d)}const x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);return[x,r.width,r.height]}
+
+/* ---------- filters ---------- */
+class HP1{constructor(fc){const K=Math.tan(Math.PI*fc*DT);this.b=1/(1+K);this.a=(K-1)/(K+1);this.x1=0;this.y1=0}step(x){const y=this.b*(x-this.x1)-this.a*this.y1;this.x1=x;this.y1=y;return y}}
+class HP2{constructor(fc){const K=Math.tan(Math.PI*fc*DT),n=1/(1+Math.SQRT2*K+K*K);this.b0=n;this.b1=-2*n;this.b2=n;this.a1=2*(K*K-1)*n;this.a2=(1-Math.SQRT2*K+K*K)*n;this.x1=this.x2=this.y1=this.y2=0}
+ step(x){const y=this.b0*x+this.b1*this.x1+this.b2*this.x2-this.a1*this.y1-this.a2*this.y2;this.x2=this.x1;this.x1=x;this.y2=this.y1;this.y1=y;return y}}
+class Int{constructor(){this.y=0;this.x1=0}step(x){this.y+=(x+this.x1)/2*DT;this.x1=x;return this.y}}
+const disp=()=>{const f=[new HP2(0.05),new Int(),new HP1(0.04),new Int(),new HP1(0.04)];return x=>f.reduce((v,g)=>g.step(v),x)};
+const angl=()=>{const f=[new HP2(0.05),new Int(),new HP1(0.04),new HP1(0.04)];return x=>f.reduce((v,g)=>g.step(v),x)}; // same high-pass poles as the displacement chain, so lever-arm corrections line up in phase
+let F;function resetFilters(){F={su:disp(),sw:disp(),he:disp(),pi:angl(),ro:angl()}}resetFilters();
+const LEV={x:100,z:11,s:15};
+
+/* ---------- relay connection ---------- */
+const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
+let raw={l:{t:[],x:[],y:[],z:[]},g:{t:[],x:[],y:[],z:[]}},lastT=null,gridNext=null,rateCount=0,rateT=performance.now(),lastMsg=0,clients=[],demoTimer=null,mode='';
+function msg(t){$('msg').textContent=t||''}
+function restart(){raw={l:{t:[],x:[],y:[],z:[]},g:{t:[],x:[],y:[],z:[]}};lastT=null;gridNext=null;for(const k in D)if(Array.isArray(D[k]))D[k].length=0;resetFilters();rawW=null;sets=[];lastBuild=0}
+function addSamples(rows){for(const r of rows){const t=r[0];if(lastT!=null&&t<lastT-5){restart()}if(lastT!=null&&t<=lastT)continue;
+  raw.l.t.push(t);raw.l.x.push(r[1]);raw.l.y.push(r[2]);raw.l.z.push(r[3]);raw.g.t.push(t);raw.g.x.push(r[4]);raw.g.y.push(r[5]);raw.g.z.push(r[6]);lastT=t;rateCount++}
+  lastMsg=performance.now();process()}
+function disconnect(){for(const c of clients)c.end(true);clients=[];if(demoTimer){clearInterval(demoTimer);demoTimer=null}}
+function join(code){code=String(code||'').trim();if(!/^\d{4}$/.test(code)){msg('Enter the 4-digit code shown on the phone.');return}
+  disconnect();restart();mode='live';msg('');try{localStorage.setItem('shiproom',code)}catch(e){}
+  const topic='shipmotion-v1/'+code;$('conn').textContent='Connecting to relay…';$('dot').className='dot warn';
+  for(const url of BROKERS){try{const c=mqtt.connect(url,{clientId:'ship-d-'+code+'-'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,clean:true});
+    c.on('connect',()=>{c.subscribe(topic);if(!lastMsg){$('conn').textContent='Relay connected, waiting for phone '+code+'…'}});
+    c.on('message',(tp,payload)=>{try{const j=JSON.parse(payload.toString());if(j&&j.v===1&&Array.isArray(j.s))addSamples(j.s)}catch(e){}});
+    c.on('error',()=>{});clients.push(c)}catch(e){}}}
+async function demo(){disconnect();restart();mode='demo';msg('');$('conn').textContent='Loading demo…';
+  try{const txt=await(await fetch('demo.csv')).text();const rows=txt.trim().split('\n').slice(1).map(l=>l.split(',').map(Number));const per=rows[rows.length-1][0]+0.02,start=performance.now();let i=0,lap=0;
+    demoTimer=setInterval(()=>{const tt=(performance.now()-start)/1000,out=[];while(true){const r=rows[i];const t=r[0]+lap*per;if(t>tt)break;out.push([t,...r.slice(1)]);i++;if(i>=rows.length){i=0;lap++}}if(out.length)addSamples(out)},100)}
+  catch(e){msg('Demo data did not load: '+e.message)}}
+$('joinBtn').addEventListener('click',()=>join($('room').value));
+$('room').addEventListener('keydown',e=>{if(e.key==='Enter')join($('room').value)});
+$('demoBtn').addEventListener('click',demo);
+setInterval(()=>{if(!mode)return;const age=(performance.now()-lastMsg)/1000;
+  if(mode==='demo'){$('dot').className='dot ok';$('conn').textContent='Demo replay (25 Nov recording)'}
+  else if(lastMsg&&age<2){$('dot').className='dot ok';$('conn').textContent='Live from phone '+$('room').value}
+  else if(lastMsg){$('dot').className='dot warn';$('conn').textContent='No data for '+Math.round(age)+' s. Is the phone screen on with sensor.html open?'}},1000);
+{let q=new URLSearchParams(location.search).get('room'),saved=null;try{saved=localStorage.getItem('shiproom')}catch(e){}$('room').value=q||saved||'';if(q)setTimeout(()=>join(q),0)}
+function interp(s,c,t,hint){const T=raw[s].t;let i=hint[s]||0;while(i<T.length-2&&T[i+1]<t)i++;hint[s]=i;const t0=T[i],t1=T[i+1];if(t1==null||t1===t0)return raw[s][c][i];const r=(t-t0)/(t1-t0);return raw[s][c][i]*(1-r)+raw[s][c][i+1]*r}
+function process(){const L=raw.l.t,G=raw.g.t;if(L.length<2||G.length<2)return;
+  if(gridNext==null){gridNext=Math.ceil(Math.max(L[0],G[0])/DT)*DT;D.t0=gridNext}
+  const end=Math.min(L[L.length-1],G[G.length-1]),hint={};
+  while(gridNext<=end){const t=gridNext;
+    const lx=interp('l','x',t,hint),ly=interp('l','y',t,hint),lz=interp('l','z',t,hint),gx=interp('g','x',t,hint),gy=interp('g','y',t,hint);
+    const su=F.su(-ly),sw=F.sw(-lx),he=F.he(lz),pi=F.pi(-gx)/RAD,ro=F.ro(-gy)/RAD;
+    const hc=he-LEV.x*pi*RAD+LEV.s*ro*RAD,sc=su+LEV.z*pi*RAD,wc=sw-LEV.z*ro*RAD;
+    D.t.push(t);D.hc.push(hc);D.sc.push(sc);D.wc.push(wc);D.pitch.push(pi);D.roll.push(ro);D.hp.push(he);D.wp.push(sw);gridNext=+(gridNext+DT).toFixed(4)}
+  const keep=t=>{const k=raw[t].t.findIndex(v=>v>end-5);if(k>0)for(const c of['t','x','y','z'])raw[t][c].splice(0,k)};keep('l');keep('g');
+  const over=D.t.length-KEEP;if(over>200){for(const k in D)if(Array.isArray(D[k]))D[k].splice(0,over);D.t0=D.t[0]}
+  lastData=performance.now()}
+
+/* ---------- stats & wave rebuild ---------- */
+function rms(a,n){const s=a.slice(-n);if(!s.length)return 0;const m=s.reduce((p,v)=>p+v,0)/s.length;return Math.sqrt(s.reduce((p,v)=>p+(v-m)**2,0)/s.length)}
+function peakPeriod(a,n){const s=a.slice(-n);if(s.length<400)return null;const fs=[],ps=[];for(let f=0.05;f<=0.3;f+=0.0025){let re=0,im=0;const w=2*Math.PI*f*DT;for(let i=0;i<s.length;i++){re+=s[i]*Math.cos(w*i);im-=s[i]*Math.sin(w*i)}fs.push(f);ps.push(re*re+im*im)}
+  let best=0,bf=0.1;for(let i=4;i<ps.length-4;i++){let p=0;for(let j=-4;j<=4;j++)p+=ps[i+j];if(p>best){best=p;bf=fs[i]}}return 1/bf}
+function stats(){const n=60/DT;if(D.t.length<200)return;
+  $('k1').textContent='±'+(rms(D.hp,n)*FT).toFixed(1)+' ft';$('k2').textContent='±'+(rms(D.hc,n)*FT).toFixed(1)+' ft';
+  $('k4').textContent='±'+rms(D.pitch,n).toFixed(2)+'°';$('k5').textContent='±'+rms(D.roll,n).toFixed(2)+'°';$('k6').textContent='±'+(rms(D.wp,n)*FT).toFixed(1)+' ft';
+  const T=peakPeriod(D.hp,120/DT);if(T)$('k3').textContent=T.toFixed(1)+' s'}
+const g=9.81,LW=266,BW=32;let MU=205*RAD,rawW=null,sets=[],comps=[];
+const sinc=u=>Math.abs(u)<1e-6?1:Math.sin(u)/u;
+function dftWindow(){const n=Math.min(D.t.length,180/DT);if(n<40/DT)return null;const x=D.hc.slice(-n),tw0=D.t[D.t.length-n],m=x.reduce((p,v)=>p+v,0)/n,Tw=n*DT,out=[];
+  for(let j=Math.ceil(0.07*Tw);j<=Math.floor(0.2*Tw);j++){const f=j/Tw,w=2*Math.PI*f*DT;let re=0,im=0;for(let i=0;i<n;i++){const v=x[i]-m;re+=v*Math.cos(w*i);im-=v*Math.sin(w*i)}out.push([2*Math.PI*f,2*Math.hypot(re,im)/n,Math.atan2(im,re)])}
+  return{tw0,c:out}}
+function buildComps(W){const U=+$('kn').value*0.5144,dx=Math.cos(MU),dz=Math.sin(MU),c=-dx*U;
+  return W.c.map(([we,a,p])=>{const w=U===0||Math.abs(c)<1e-6?we:(-1+Math.sqrt(Math.max(0,1+4*(c/g)*we)))/(2*c/g);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
+    return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w]})}
+function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
+  const kn=$('kn').value,dirTxt=$('dir').selectedOptions[0].textContent.replace('Waves from ','');
+  $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'. Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
+let lastBuild=0;
+function rebuild(force){if(!force&&performance.now()-lastBuild<10000)return;const W=dftWindow();if(!W)return;lastBuild=performance.now();rawW=W;const c=buildComps(W);
+  sets=[...sets.slice(-1).map(s=>({...s,from:s.w})),{c,pre:precompute(c),w:0,born:performance.now()}];waveText(c)}
+function mixComps(){const now=performance.now();if(sets.length>1){const nw=sets[sets.length-1];nw.w=Math.min(1,(now-nw.born)/3000);sets[0].w=1-nw.w;if(nw.w>=1)sets=[nw]}else if(sets.length)sets[0].w=1;
+  comps=[];for(const s of sets)for(const c of s.c)comps.push([c[0],c[1],c[2]*s.w,c[3]])}
+$('kn').addEventListener('change',()=>{if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
+$('dir').addEventListener('change',()=>{MU=(180+ +$('dir').value)*RAD;if(arrow)arrow.setDirection(new THREE.Vector3(Math.cos(MU),0,Math.sin(MU)));if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
+
+/* ---------- ship geometry (x forward, y up from waterline, z starboard) ---------- */
+const hw=x=>x>40?16*Math.sqrt(Math.max(0.004,1-((x-40)/110)**2)):x<-115?16-2.5*((-115-x)/29)**2:16;
+const hbot=x=>x>136?-8.3+(x-136)/14*26:x<-118?-8.3+(-118-x)/26*6:-8.3;
+const htop=x=>x>100?18+(x-100)/50*2:18;
+const sw=x=>Math.min(15.8,hw(x)+0.6);
+const stop=x=>x<-138?29.5:x<-134?32.5:x<-128?35.5:x<=100?38.5:x<=106?38.5-(x-100)/6*5.5:x<=107?33-(x-106)*4:x<=110?29-(x-107)/3*5:Math.max(18.1,24-(x-110)/8*5.9);
+function range(a,b,n){const r=[];for(let i=0;i<=n;i++)r.push(a+(b-a)*i/n);return r}
+function loft(xs,ring,color,closeEnds){ // ring(x)->[[z,y,c?],...] closed loop
+  const pos=[],col=[],cc=new THREE.Color();
+  const push=(p,c)=>{pos.push(p[0],p[1],p[2]);cc.set(c);col.push(cc.r,cc.g,cc.b)};
+  const R=xs.map(x=>ring(x).map(p=>[x,p[1],p[0],p[2]||color]));
+  for(let i=0;i<R.length-1;i++){const a=R[i],b=R[i+1],n=a.length;for(let j=0;j<n;j++){const k=(j+1)%n;
+    push(a[j],a[j][3]);push(b[j],b[j][3]);push(b[k],b[k][3]);push(a[j],a[j][3]);push(b[k],b[k][3]);push(a[k],a[k][3]);}}
+  if(closeEnds)for(const e of[R[0],R[R.length-1]]){const c=e.reduce((s,p)=>[s[0]+p[0]/e.length,s[1]+p[1]/e.length,s[2]+p[2]/e.length],[0,0,0]);
+    for(let j=0;j<e.length;j++){const k=(j+1)%e.length;push(c,e[j][3]);push(e[j],e[j][3]);push(e[k],e[k][3])}}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));g.computeVertexNormals();
+  return new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}))}
+function box(x0,x1,y0,y1,z0,z1,c,basic){const m=new THREE.Mesh(new THREE.BoxGeometry(x1-x0,y1-y0,z1-z0),basic?new THREE.MeshBasicMaterial({color:c}):new THREE.MeshLambertMaterial({color:c}));m.position.set((x0+x1)/2,(y0+y1)/2,(z0+z1)/2);return m}
+function band(xs,wfn,y0,y1,c,off){ // strip on both sides following width
+  const g=new THREE.Group();for(const s of[-1,1]){g.add(loft(xs,x=>{const w=wfn(x)+off;return[[s*w,y0],[s*w,y1],[s*(w+0.01),y1],[s*(w+0.01),y0]]},c,false))}return g}
+function buildShip(){
+  const body=new THREE.Group(),W='#f4f6f8',NAV='#13284d',RED='#6b2b2b';
+  const hx=range(-144,150,90);
+  body.add(loft(hx,x=>{const w=hw(x),b=hbot(x),t=htop(x),cl=y=>Math.max(y,b),r=Math.min(1.5,w*0.5);
+    const C=y=>y>=1.0?W:y>=-0.5?NAV:RED;return[[-w,t],[-w,cl(1.2)],[-w,cl(0.6)],[-w,cl(-0.4)],[-w,cl(b+1.5)],[-(w-r),b],[w-r,b],[w,cl(b+1.5)],[w,cl(-0.4)],[w,cl(0.6)],[w,cl(1.2)],[w,t]].map(p=>[p[0],p[1],C(p[1])])},W,true));
+  // foredeck & sun-deck surfaces
+  body.add(loft(range(100,149.5,20),x=>[[-hw(x)+0.2,htop(x)+0.05,'#c9d2da'],[hw(x)-0.2,htop(x)+0.05,'#c9d2da'],[hw(x)-0.2,htop(x),'#c9d2da'],[-hw(x)+0.2,htop(x),'#c9d2da']],'#c9d2da',false));
+  // superstructure
+  const sx=[-142,-138.05,-137.95,-134.05,-133.95,-128.05,-127.95,...range(-122,100,37),102,104,106,107,108.5,110,114,118];
+  body.add(loft(sx,x=>{const w=sw(x),t=stop(x);return[[-w,18],[-w,t],[w,t],[w,18]]},W,true));
+  // balcony rows decks 8-14 and hull window rows
+  for(let i=0;i<7;i++){const y=19.6+2.85*i,xs=range(-126,Math.min(98,100-(i>4?0:0)),60).filter(x=>stop(x)>y+1.6);
+    body.add(band(xs,sw,y,y+1.35,'#2f4660',0.06));}
+  for(const y of[5.5,8.6,11.7]){body.add(band(range(-112,96,50),hw,y,y+0.7,'#3a4f66',0.05))}
+  // bridge band and wings
+  body.add(box(103.5,108.6,29.6,32.6,-12.6,12.6,'#1d3048'));
+  body.add(box(102,108,32.8,33.6,-17.5,17.5,W));body.add(box(102,108,30,32.6,-17.4,-14.2,'#1d3048'));body.add(box(102,108,30,32.6,14.2,17.4,'#1d3048'));
+  // lifeboats deck 7
+  for(let i=0;i<11;i++){const x=-98+i*12.5;for(const s of[-1,1]){body.add(box(x,x+10,14.6,16.6,s*16.2-1.6,s*16.2+1.6,'#e2572b'));body.add(box(x+0.3,x+9.7,16.6,17.3,s*16.2-1.4,s*16.2+1.4,'#f7f7f7'))}}
+  // top decks
+  body.add(box(-60,58,38.5,41.6,-12,12,W));body.add(box(-60.1,58.1,39.4,40.8,-12.1,12.1,'#2f4660'));
+  body.add(box(58,96,38.5,43.4,-13,13,W));body.add(box(57.9,96.1,40.2,42.2,-13.1,13.1,'#2f4660'));
+  body.add(box(-30,10,41.6,41.9,-7,7,'#4aa3b3'));body.add(box(-127,-100,38.5,38.9,-14.5,14.5,'#4f9f82'));
+  body.add(box(-100,-60,38.5,39,-15,15,'#c9d2da'));
+  // funnel
+  const fs=new THREE.Shape();fs.moveTo(-104,38.5);fs.lineTo(-74,38.5);fs.lineTo(-79,57);fs.lineTo(-99,57);fs.closePath();
+  const fg=new THREE.ExtrudeGeometry(fs,{depth:9,bevelEnabled:false});fg.translate(0,0,-4.5);body.add(new THREE.Mesh(fg,new THREE.MeshLambertMaterial({color:NAV})));
+  body.add(box(-99.5,-78.5,57,58,-4.6,4.6,'#0b1424'));
+  // mast & domes
+  body.add(box(79,81,43.4,56,-0.8,0.8,W));body.add(box(79.4,80.6,52,52.6,-6,6,W));body.add(box(79.4,80.6,48.5,49,-4.5,4.5,W));
+  const dm=new THREE.MeshLambertMaterial({color:'#ffffff'});for(const p of[[70,45.6,5],[70,45.6,-5],[-48,43.8,0]]){const s=new THREE.Mesh(new THREE.SphereGeometry(2.3,16,12),dm);s.position.set(...p);body.add(s)}
+  body.position.y=-9; // pivot is 9 m above waterline
+  const g=new THREE.Group();g.add(body);return g}
+
+
+/* ---------- 3D scene ---------- */
+let ok=true,scene,ship,seaGeo,seaBase,trailGeo,views=[],arrow;
+const CAB=new THREE.Vector3(100,20-9,sw(100)+0.6);
+function ortho(cam,W,H,hwid,hh){const a=W/H;let h=Math.max(hh,hwid/a);cam.left=-h*a;cam.right=h*a;cam.top=h;cam.bottom=-h;cam.updateProjectionMatrix()}
+function precompute(cs){if(!seaBase)return[];const n=seaBase.length/3,dx=Math.cos(MU),dz=Math.sin(MU);return cs.map(c=>{const a=new Float32Array(n);for(let i=0;i<n;i++)a[i]=c[0]*(dx*seaBase[3*i]+dz*seaBase[3*i+2]);return a})}
+const AZ0=Math.PI/4,EL0=Math.PI/4;let az=AZ0,el=EL0;
+try{
+  scene=new THREE.Scene();scene.add(new THREE.HemisphereLight(0xe8f4ff,0x0b3a52,0.95));const sun=new THREE.DirectionalLight(0xffffff,0.75);sun.position.set(220,320,260);scene.add(sun);
+  ship=buildShip();scene.add(ship);
+  const cm=new THREE.Mesh(new THREE.SphereGeometry(2.4,16,12),new THREE.MeshBasicMaterial({color:0xff7a3d}));cm.position.copy(CAB);ship.add(cm);
+  seaGeo=new THREE.PlaneGeometry(1000,1000,110,110);seaGeo.rotateX(-Math.PI/2);seaBase=Float32Array.from(seaGeo.attributes.position.array);
+  const sea=new THREE.Mesh(seaGeo,new THREE.MeshPhongMaterial({color:0x0f5a78,specular:0x9fd3ec,shininess:40,flatShading:true}));sea.position.y=-9;scene.add(sea);
+  scene.add(box(-700,700,-300,-40,-700,700,'#0a3550',true));
+  arrow=new THREE.ArrowHelper(new THREE.Vector3(Math.cos(MU),0,Math.sin(MU)),new THREE.Vector3(110,10,95),75,0xffffff,24,14);scene.add(arrow);
+  trailGeo=new THREE.BufferGeometry();trailGeo.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(61*3),3));
+  const tl=new THREE.Line(trailGeo,new THREE.LineBasicMaterial({color:0xff7a3d,depthTest:false,transparent:true,opacity:.9}));tl.renderOrder=998;tl.frustumCulled=false;scene.add(tl);
+  const r=new THREE.WebGLRenderer({canvas:$('cc'),antialias:true,alpha:true});r.setPixelRatio(Math.min(devicePixelRatio||1,2));
+  views=[{r,cam:new THREE.OrthographicCamera(-1,1,1,-1,1,3000),c:$('cc'),l:$('lc')}];
+}catch(e){ok=false;$('err').style.display='block'}
+{let drag=null;const f=$('fc');f.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];f.setPointerCapture(e.pointerId)});
+ f.addEventListener('pointermove',e=>{if(!drag)return;az+=(e.clientX-drag[0])*0.008;el=Math.max(0.12,Math.min(1.5,el+(e.clientY-drag[1])*0.006));drag=[e.clientX,e.clientY]});
+ f.addEventListener('pointerup',()=>drag=null);f.addEventListener('pointercancel',()=>drag=null)}
+$('reset').addEventListener('click',()=>{az=AZ0;el=EL0});
+const dummy=new THREE.Object3D(),tmp=new THREE.Vector3();
+function pose(o,t,E){o.position.set(at(D.sc,t)*E,at(D.hc,t)*E,at(D.wc,t)*E);o.rotation.set(at(D.roll,t)*RAD*E,0,at(D.pitch,t)*RAD*E,'ZXY')}
+function render3d(){const E=+$('exa').value;pose(ship,tNow,E);ship.updateMatrixWorld(true);
+  const p=seaGeo.attributes.position.array,n=p.length/3,dx=Math.cos(MU),dz=Math.sin(MU);const cs=[],pr=[];
+  for(const s of sets)s.c.forEach((c,j)=>{if(s.w>0){cs.push([c[2]*E*s.w,c[1]*tNow+c[3]]);pr.push(s.pre[j])}});
+  for(let i=0;i<n;i++){let y=0,h=0;for(let j=0;j<cs.length;j++){const th=cs[j][1]-pr[j][i],A=cs[j][0];y+=A*Math.cos(th);h+=A*Math.sin(th)}p[3*i]=seaBase[3*i]+h*dx;p[3*i+1]=y;p[3*i+2]=seaBase[3*i+2]+h*dz}
+  seaGeo.attributes.position.needsUpdate=true;seaGeo.computeVertexNormals();
+  const tp=trailGeo.attributes.position;for(let i=0;i<=60;i++){pose(dummy,tNow-6+i*0.1,E);dummy.updateMatrixWorld(true);tmp.copy(CAB).applyMatrix4(dummy.matrixWorld);tp.setXYZ(i,tmp.x,tmp.y,tmp.z)}tp.needsUpdate=true;
+  const cw=CAB.clone().applyMatrix4(ship.matrixWorld);
+  for(const v of views){const r=v.c.getBoundingClientRect();if(!r.width)continue;v.r.setSize(r.width,r.height,false);
+    const tg=new THREE.Vector3(0,10,0),d=new THREE.Vector3(Math.cos(el)*Math.cos(az),Math.sin(el),Math.cos(el)*Math.sin(az));v.cam.position.copy(tg).addScaledVector(d,900);v.cam.lookAt(tg);ortho(v.cam,r.width,r.height,170,95);
+    v.r.render(scene,v.cam);const q=cw.clone().project(v.cam);v.l.style.left=((q.x+1)/2*r.width)+'px';v.l.style.top=((1-q.y)/2*r.height)+'px'}}
+
+/* ---------- 2D cut views ---------- */
+function waveCut(t,E,axis,from,to,n){ // returns displaced [s,y] along a line through pivot; axis 'x' (centreline) or 'z' (midships)
+  const dx=Math.cos(MU),dz=Math.sin(MU),d=axis==='x'?dx:dz,out=[];
+  for(let i=0;i<=n;i++){const s0=from+(to-from)*i/n;let y=0,h=0;for(const c of comps){const th=c[1]*t+c[3]-c[0]*d*s0,A=c[2]*E;y+=A*Math.cos(th);h+=A*Math.sin(th)}out.push([s0+h*d,y])}return out}
+function path(x,pts,map){pts.forEach((p,i)=>{const q=map(p[0],p[1]);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])})}
+function fillPts(x,pts,map,c){x.fillStyle=c;x.beginPath();path(x,pts,map);x.closePath();x.fill()}
+function water(x,W,H,wv,toPx,cutLbl){ // translucent water body below the cut line, crisp surface
+  const g=x.createLinearGradient(0,H*0.4,0,H);g.addColorStop(0,'rgba(18,108,150,.72)');g.addColorStop(1,'rgba(8,48,80,.9)');
+  x.fillStyle=g;x.beginPath();const p0=toPx(wv[0][0],wv[0][1]);x.moveTo(p0[0],H);wv.forEach(p=>{const q=toPx(p[0],p[1]);x.lineTo(q[0],q[1])});x.lineTo(toPx(wv[wv.length-1][0],0)[0],H);x.closePath();x.fill();
+  x.strokeStyle='#eaf7ff';x.lineWidth=2;x.beginPath();wv.forEach((p,i)=>{const q=toPx(p[0],p[1]);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])});x.stroke();
+  x.strokeStyle='rgba(10,37,64,.35)';x.setLineDash([5,6]);x.lineWidth=1;x.beginPath();x.moveTo(0,toPx(0,0)[1]);x.lineTo(W,toPx(0,0)[1]);x.stroke();x.setLineDash([]);
+  x.fillStyle='rgba(238,246,255,.85)';x.font='600 12px Barlow';x.fillText('still-water level',8,toPx(0,0)[1]+16)}
+function scaleBar(x,W,H,k,ft){const px=ft/3.281*k,l=(W-px)/2;x.fillStyle='rgba(238,246,255,.9)';x.fillRect(l,H-18,px,3);x.font='600 12px Barlow';x.textAlign='center';x.fillText(ft+' ft',W/2,H-24);x.textAlign='left'}
+function cabDot(x,q){x.fillStyle='#ff7a3d';x.beginPath();x.arc(q[0],q[1],5,0,7);x.fill();x.strokeStyle='#fff';x.lineWidth=1.5;x.stroke();x.font='700 13px Barlow';x.fillStyle='#fff';const w=x.measureText('9004').width+12;x.fillStyle='#ff7a3d';x.fillRect(q[0]-w/2,q[1]-28,w,18);x.fillStyle='#fff';x.textAlign='center';x.fillText('9004',q[0],q[1]-14);x.textAlign='left'}
+function draw2d(){if(!comps.length)return;const E=+$('exa').value;
+ { // side: x forward, y up from waterline; motion = heave, pitch, surge
+  const[x,W,H]=fit2($('cs'));x.clearRect(0,0,W,H);const k=Math.min(W*0.9/310,H/95),cx=W*0.5,cy=H*0.6;
+  const th=at(D.pitch,tNow)*RAD*E,c=Math.cos(th),s=Math.sin(th),X=at(D.sc,tNow)*E,Z=at(D.hc,tNow)*E;
+  const toPx=(px,py)=>[cx+px*k,cy-py*k];
+  const sm=(px,py)=>{const yy=py-9;return toPx(X+px*c-yy*s,9+Z+px*s+yy*c)};
+  const hx=range(-144,150,80);
+  const hull=[...hx.map(v=>[v,htop(v)]),...hx.slice().reverse().map(v=>[v,hbot(v)])];
+  const sx=[-142,-138.05,-137.95,-134.05,-133.95,-128.05,-127.95,...range(-122,118,60)];
+  const sup=[[-142,18],...sx.map(v=>[v,stop(v)]),[118,18]];
+  fillPts(x,sup,sm,'#e9eef3');fillPts(x,hull,sm,'#f7f9fb');
+  fillPts(x,[...hx.map(v=>[v,Math.max(hbot(v),-0.5)]),...hx.slice().reverse().map(v=>[v,hbot(v)])],sm,'#6b2b2b');
+  fillPts(x,[...hx.map(v=>[v,Math.max(hbot(v),0.7)]),...hx.slice().reverse().map(v=>[v,Math.max(hbot(v),-0.5)])],sm,'#13284d');
+  x.strokeStyle='#2f4660';x.lineWidth=Math.max(1,1.2*k);for(let i=0;i<7;i++){const y=20.3+2.85*i,xs=range(-126,98,40).filter(v=>stop(v)>y+1);x.beginPath();path(x,xs.map(v=>[v,y]),sm);x.stroke()}
+  x.strokeStyle='#3a4f66';x.lineWidth=Math.max(1,0.6*k);for(const y of[5.8,8.9,12]){x.beginPath();path(x,[[-112,y],[96,y]],sm);x.stroke()}
+  for(let i=0;i<11;i++){const b=-98+i*12.5;fillPts(x,[[b,14.6],[b+10,14.6],[b+10,16.8],[b,16.8]],sm,'#e2572b')}
+  fillPts(x,[[-104,38.5],[-74,38.5],[-79,57],[-99,57]],sm,'#13284d');fillPts(x,[[-60,38.5],[58,38.5],[58,41.6],[-60,41.6]],sm,'#f2f5f8');fillPts(x,[[58,38.5],[96,38.5],[96,43.4],[58,43.4]],sm,'#f2f5f8');
+  fillPts(x,[[103.5,29.6],[108.6,29.6],[107.4,32.6],[103.5,32.6]],sm,'#1d3048');fillPts(x,[[79,43],[81,43],[81,56],[79,56]],sm,'#f2f5f8');
+  const wv=waveCut(tNow,E,'x',-260,260,180);water(x,W,H,wv,toPx);
+  cabDot(x,sm(CAB.x,CAB.y+9));const pc=sm(0,9);x.fillStyle='#0a2540';x.strokeStyle='#fff';x.beginPath();x.arc(pc[0],pc[1],3.5,0,7);x.fill();x.stroke();
+  scaleBar(x,W,H,k,300)}
+ { // bow-on: s = starboard (drawn left), y up; motion = heave, roll, sway
+  const[x,W,H]=fit2($('cb'));x.clearRect(0,0,W,H);const k=Math.min(W*0.9/80,(H-60)/72),cx=W*0.5,cy=H*0.74;
+  const ph=at(D.roll,tNow)*RAD*E,c=Math.cos(ph),s=Math.sin(ph),Y=at(D.wc,tNow)*E,Z=at(D.hc,tNow)*E;
+  const toPx=(ps,py)=>[cx-ps*k,cy-py*k];
+  const bm=(ps,py)=>{const yy=py-9;return toPx(Y+ps*c+yy*s,9+Z+yy*c-ps*s)};
+  fillPts(x,[[-4.5,38],[4.5,38],[4.5,57],[-4.5,57]],bm,'#13284d');
+  fillPts(x,[[-15.8,18],[15.8,18],[15.8,38.5],[-15.8,38.5]],bm,'#e9eef3');
+  fillPts(x,[[-12,38.5],[12,38.5],[12,41.6],[-12,41.6]],bm,'#f2f5f8');
+  for(const p of[[-5,45.6],[5,45.6]]){const q=bm(p[0],p[1]);x.fillStyle='#fff';x.beginPath();x.arc(q[0],q[1],2.3*k,0,7);x.fill()}
+  fillPts(x,[[-17.5,32.8],[17.5,32.8],[17.5,33.6],[-17.5,33.6]],bm,'#f2f5f8');
+  const sec=[[-16,18],[16,18],[16,-6.8],[14.5,-8.3],[-14.5,-8.3],[-16,-6.8]];fillPts(x,sec,bm,'#f7f9fb');
+  fillPts(x,[[-16,-0.5],[16,-0.5],[16,-6.8],[14.5,-8.3],[-14.5,-8.3],[-16,-6.8]],bm,'#6b2b2b');fillPts(x,[[-16,0.7],[16,0.7],[16,-0.5],[-16,-0.5]],bm,'#13284d');
+  x.strokeStyle='#2f4660';x.lineWidth=Math.max(1,1.2*k);for(let i=0;i<7;i++){const y=20.3+2.85*i;x.beginPath();path(x,[[-15.8,y],[15.8,y]],bm);x.stroke()}
+  for(const sd of[-1,1])fillPts(x,[[sd*14.6,14.6],[sd*17.8,14.6],[sd*17.8,16.8],[sd*14.6,16.8]],bm,'#e2572b');
+  const wv=waveCut(tNow,E,'z',-80,80,120);water(x,W,H,wv,toPx);
+  cabDot(x,bm(CAB.z,CAB.y+9));x.fillStyle='rgba(238,246,255,.9)';x.font='600 13px Barlow';x.fillText('Stbd',8,H-12);x.textAlign='right';x.fillText('Port',W-8,H-12);x.textAlign='left';
+  scaleBar(x,W,H,k,50)}
+}
+
+function trace(id,series,mult,sc0,ticks,unit){const[x,W,H]=fit2($(id));x.clearRect(0,0,W,H);const t1=tNow,t0=tNow-60,sx=t=>(t-t0)/(t1-t0)*W,mid=H/2,sc=H/sc0;
+  x.strokeStyle='rgba(159,184,208,.25)';x.lineWidth=1;for(const m of ticks){x.beginPath();x.moveTo(0,mid-m*sc);x.lineTo(W,mid-m*sc);x.stroke()}
+  x.fillStyle='#9fb8d0';x.font='13px Barlow,sans-serif';for(const m of[ticks[0],0,ticks[ticks.length-1]])x.fillText((m>0?'+':'')+m+unit,6,mid-m*sc-4);
+  if(D.t.length<2)return;const i0=Math.max(0,Math.floor((t0-D.t0)/DT)),i1=Math.min(D.t.length-1,Math.ceil((t1-D.t0)/DT));
+  for(const[a,c,w]of series){x.strokeStyle=c;x.lineWidth=w;x.beginPath();for(let i=i0;i<=i1;i++){const px=sx(D.t[i]),py=mid-a[i]*mult*sc;i>i0?x.lineTo(px,py):x.moveTo(px,py)}x.stroke()}}
+let tNow=0,lastFrame=null,lastStats=0;
+function frame(ts){const dt=lastFrame==null?0:(ts-lastFrame)/1000;lastFrame=ts;
+  if(D.t.length>1){const target=D.t[D.t.length-1]-0.3;tNow=Math.abs(target-tNow)>1?target:Math.min(target,tNow+dt)}
+  if(ts-lastStats>1000){lastStats=ts;stats();rebuild(false);const r=rateCount/((ts-rateT)/1000);rateCount=0;rateT=ts;$('rate').textContent=r>0?Math.round(r)+' samples/s':''}
+  mixComps();
+  if(ok&&D.t.length>1){try{render3d()}catch(e){ok=false;$('err').style.display='block';console.error(e)}}
+  if(D.t.length>1)draw2d();
+  trace('tr',[[D.wp,'#8fd3ff',1.6],[D.hc,'#eef6ff',1.8],[D.hp,'#ff7a3d',2.2]],FT,18,[-6,-3,0,3,6],' ft');
+  trace('tr2',[[D.roll,'#7ee0b5',2],[D.pitch,'#c9a0ff',2]],1,2.4,[-1,-0.5,0,0.5,1],'°');
+  requestAnimationFrame(frame)}
+requestAnimationFrame(frame);$('conn').textContent='Not connected';
+}
+</script></body></html>

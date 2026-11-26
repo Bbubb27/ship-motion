@@ -1,0 +1,82 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ship sensor</title>
+<style>
+/* Phone-side sensor page: big, simple, readable on the cabin floor */
+:root{--bg:#0a2540;--ink:#eef6ff;--mut:#9fb8d0;--acc:#ff7a3d;--ok:#3ccf86;--line:#24527d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 -apple-system,system-ui,sans-serif;padding:max(24px,env(safe-area-inset-top)) 22px 32px;min-height:100vh}
+h1{font-size:30px;line-height:1.1;margin:0 0 8px}
+p{color:var(--mut);margin:0 0 16px}
+button{font:600 19px -apple-system,system-ui;width:100%;min-height:56px;border-radius:12px;border:0;background:var(--acc);color:#1b0d05;margin:8px 0}
+button.sec{background:#12375e;color:var(--ink);border:1px solid var(--line)}
+.code{font:700 56px/1 ui-monospace,Menlo,monospace;letter-spacing:4px;text-align:center;margin:18px 0 6px}
+.row{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding:10px 0}
+.row b{font-variant-numeric:tabular-nums}
+.ok{color:var(--ok)}.bad{color:#ff8a8a}.warn{color:#ffd27a}
+#live{display:none}
+</style></head><body>
+<div id="setup">
+<h1>Ship motion sensor</h1>
+<p>Put the phone flat on the cabin floor: screen up, charging port toward the bow. Then tap Start and leave it alone.</p>
+<button id="go">Start</button>
+<p id="err" class="bad"></p>
+</div>
+<div id="live">
+<p style="text-align:center;margin:0">Room code — type this on the Mac</p>
+<div class="code" id="code">----</div>
+<div class="row"><span>Phone flat</span><b id="flat">…</b></div>
+<div class="row"><span>Sensor rate</span><b id="rate">…</b></div>
+<div class="row"><span>Relay</span><b id="relay">connecting…</b></div>
+<div class="row"><span>Sent</span><b id="sent">0 s</b></div>
+<div class="row"><span>Screen kept on</span><b id="wake">…</b></div>
+<p style="margin-top:16px">Keep this page open and the screen on. Locking the phone or switching apps pauses the sensors.</p>
+<button class="sec" id="stop">Stop</button>
+</div>
+<script src="mqtt.min.js"></script>
+<script>
+{
+const $=id=>document.getElementById(id);
+const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
+const code=String(Math.floor(1000+Math.random()*9000));
+const topic='shipmotion-v1/'+code;
+let buf=[],clients=[],n=0,t0=null,flip=1,gSum=[0,0,0],gN=0,lastRate=performance.now(),started=0,wakeLock=null,running=false;
+const RAD=Math.PI/180;
+function onMotion(e){
+  const a=e.acceleration,g=e.accelerationIncludingGravity,r=e.rotationRate;
+  if(!a||a.x==null||!r){$('err').textContent='This phone is not giving gravity-free acceleration.';return}
+  if(g&&g.x!=null){gSum[0]+=g.x-a.x;gSum[1]+=g.y-a.y;gSum[2]+=g.z-a.z;gN++}
+  const t=performance.now()/1000;if(t0==null)t0=t;
+  // phone axes: x right, y toward top, z out of the screen (same as phyphox); gyro in rad/s about x, y, z
+  buf.push([+(t-t0).toFixed(3),+(flip*a.x).toFixed(4),+(flip*a.y).toFixed(4),+(flip*a.z).toFixed(4),
+            +((r.beta||0)*RAD).toFixed(5),+((r.gamma||0)*RAD).toFixed(5),+((r.alpha||0)*RAD).toFixed(5)]);
+  n++}
+function send(){
+  if(!running)return;
+  if(buf.length){const msg=JSON.stringify({v:1,s:buf});buf=[];let any=false;
+    for(const c of clients)if(c.connected){c.publish(topic,msg,{qos:0});any=true}
+    $('relay').textContent=any?clients.filter(c=>c.connected).length+' connected':'reconnecting…';$('relay').className=any?'ok':'warn'}
+  const now=performance.now();
+  if(now-lastRate>1000){
+    $('rate').textContent=Math.round(n/((now-lastRate)/1000))+' Hz';n=0;lastRate=now;
+    if(gN>20){const gx=gSum[0]/gN,gy=gSum[1]/gN,gz=gSum[2]/gN,m=Math.hypot(gx,gy,gz);
+      // gravity should read +9.8 on z when screen-up; if this browser reports it flipped, flip acceleration to match
+      if(gz<0&&flip===1&&Math.abs(gz)>0.8*m)flip=-1;
+      const tilt=Math.acos(Math.min(1,Math.abs(gz)/m))/RAD;
+      $('flat').textContent=tilt<5?'Yes ('+tilt.toFixed(1)+'° tilt)':'Tilted '+tilt.toFixed(0)+'°';$('flat').className=tilt<5?'ok':'warn';
+      gSum=[0,0,0];gN=0}
+    $('sent').textContent=Math.round((now-started)/1000)+' s'}
+  setTimeout(send,100)}
+async function keepAwake(){try{wakeLock=await navigator.wakeLock.request('screen');$('wake').textContent='Yes';$('wake').className='ok'}catch(e){$('wake').textContent='Set Auto-Lock to Never';$('wake').className='warn'}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&running)keepAwake()});
+$('go').addEventListener('click',async()=>{
+  try{if(typeof DeviceMotionEvent!=='undefined'&&DeviceMotionEvent.requestPermission){const p=await DeviceMotionEvent.requestPermission();if(p!=='granted')throw new Error('Motion access was not allowed. Reload and tap Allow.')}}
+  catch(e){$('err').textContent=e.message||String(e);return}
+  window.addEventListener('devicemotion',onMotion);
+  $('setup').style.display='none';$('live').style.display='block';$('code').textContent=code;
+  running=true;started=performance.now();keepAwake();
+  for(const url of BROKERS){try{const c=mqtt.connect(url,{clientId:'ship-s-'+code+'-'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,clean:true});c.on('error',()=>{});clients.push(c)}catch(e){}}
+  send()});
+$('stop').addEventListener('click',()=>{running=false;window.removeEventListener('devicemotion',onMotion);for(const c of clients)c.end(true);clients=[];if(wakeLock)wakeLock.release();location.reload()});
+}
+</script></body></html>
