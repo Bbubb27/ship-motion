@@ -27,6 +27,7 @@ button.sec{background:#12375e;color:var(--ink);border:1px solid var(--line)}
 <div class="code" id="code">----</div>
 <div class="row"><span>Phone flat</span><b id="flat">…</b></div>
 <div class="row"><span>Sensor rate</span><b id="rate">…</b></div>
+<div class="row"><span>Compass (ship heading)</span><b id="hdg">…</b></div>
 <div class="row"><span>Relay</span><b id="relay">connecting…</b></div>
 <div class="row"><span>Sent</span><b id="sent">0 s</b></div>
 <div class="row"><span>Screen kept on</span><b id="wake">…</b></div>
@@ -40,7 +41,7 @@ const $=id=>document.getElementById(id);
 const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
 const code=String(Math.floor(1000+Math.random()*9000));
 const topic='shipmotion-v1/'+code;
-let buf=[],clients=[],n=0,t0=null,flip=1,gSum=[0,0,0],gN=0,lastRate=performance.now(),started=0,wakeLock=null,running=false;
+let hdgRaw=null,hdgAcc=null,buf=[],clients=[],n=0,t0=null,flip=1,gSum=[0,0,0],gN=0,lastRate=performance.now(),started=0,wakeLock=null,running=false;
 const RAD=Math.PI/180;
 function onMotion(e){
   const a=e.acceleration,g=e.accelerationIncludingGravity,r=e.rotationRate;
@@ -51,9 +52,11 @@ function onMotion(e){
   buf.push([+(t-t0).toFixed(3),+(flip*a.x).toFixed(4),+(flip*a.y).toFixed(4),+(flip*a.z).toFixed(4),
             +((r.beta||0)*RAD).toFixed(5),+((r.gamma||0)*RAD).toFixed(5),+((r.alpha||0)*RAD).toFixed(5)]);
   n++}
+function onOrient(e){let h=null;if(typeof e.webkitCompassHeading==='number')h=e.webkitCompassHeading;else if(e.absolute&&e.alpha!=null)h=(360-e.alpha)%360;
+  if(h!=null){hdgRaw=h;hdgAcc=typeof e.webkitCompassAccuracy==='number'?e.webkitCompassAccuracy:null}}
 function send(){
   if(!running)return;
-  if(buf.length){const msg=JSON.stringify({v:1,s:buf});buf=[];let any=false;
+  if(buf.length){const o={v:1,s:buf};if(hdgRaw!=null){o.h=+hdgRaw.toFixed(1);if(hdgAcc!=null)o.ha=hdgAcc}const msg=JSON.stringify(o);buf=[];let any=false;
     for(const c of clients)if(c.connected){c.publish(topic,msg,{qos:0});any=true}
     $('relay').textContent=any?clients.filter(c=>c.connected).length+' connected':'reconnecting…';$('relay').className=any?'ok':'warn'}
   const now=performance.now();
@@ -65,14 +68,17 @@ function send(){
       const tilt=Math.acos(Math.min(1,Math.abs(gz)/m))/RAD;
       $('flat').textContent=tilt<5?'Yes ('+tilt.toFixed(1)+'° tilt)':'Tilted '+tilt.toFixed(0)+'°';$('flat').className=tilt<5?'ok':'warn';
       gSum=[0,0,0];gN=0}
-    $('sent').textContent=Math.round((now-started)/1000)+' s'}
+    $('sent').textContent=Math.round((now-started)/1000)+' s';
+    // the phone's top points aft, so the ship's bow is 180° from the phone's compass heading
+    if(hdgRaw!=null){$('hdg').textContent=Math.round((hdgRaw+180)%360)+'° magnetic'+(hdgAcc!=null&&hdgAcc>=0?' (±'+Math.round(hdgAcc)+'°)':'');$('hdg').className=hdgAcc!=null&&hdgAcc>25?'warn':'ok'}else{$('hdg').textContent='not available';$('hdg').className='warn'}}
   setTimeout(send,100)}
 async function keepAwake(){try{wakeLock=await navigator.wakeLock.request('screen');$('wake').textContent='Yes';$('wake').className='ok'}catch(e){$('wake').textContent='Set Auto-Lock to Never';$('wake').className='warn'}}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&running)keepAwake()});
 $('go').addEventListener('click',async()=>{
-  try{if(typeof DeviceMotionEvent!=='undefined'&&DeviceMotionEvent.requestPermission){const p=await DeviceMotionEvent.requestPermission();if(p!=='granted')throw new Error('Motion access was not allowed. Reload and tap Allow.')}}
+  try{if(typeof DeviceMotionEvent!=='undefined'&&DeviceMotionEvent.requestPermission){const p=await DeviceMotionEvent.requestPermission();if(p!=='granted')throw new Error('Motion access was not allowed. Reload and tap Allow.')}
+    if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){try{await DeviceOrientationEvent.requestPermission()}catch(e){}}}
   catch(e){$('err').textContent=e.message||String(e);return}
-  window.addEventListener('devicemotion',onMotion);
+  window.addEventListener('devicemotion',onMotion);window.addEventListener('deviceorientation',onOrient);window.addEventListener('deviceorientationabsolute',onOrient);
   $('setup').style.display='none';$('live').style.display='block';$('code').textContent=code;
   running=true;started=performance.now();keepAwake();
   for(const url of BROKERS){try{const c=mqtt.connect(url,{clientId:'ship-s-'+code+'-'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,clean:true});c.on('error',()=>{});clients.push(c)}catch(e){}}

@@ -44,6 +44,10 @@ details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;
 .map{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:8px}
 .map label{display:grid;gap:4px;font-size:14px}.map select{width:100%}
 #msg{color:#ffd27a;margin:8px 0 0;min-height:1.4em}
+.rosebox{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:20px;align-items:center;margin:0 0 16px;padding:16px;border:1px solid var(--line);border-radius:10px}
+.rosefig{position:relative;aspect-ratio:1}.rosefig canvas{position:absolute;inset:0;width:100%;height:100%}
+.fld{display:flex;gap:6px;align-items:center;color:var(--mut)}.fld input{font:600 18px Barlow,sans-serif;width:6ch;min-height:44px;border-radius:8px;border:1px solid var(--line);background:#12375e;color:var(--ink);text-align:center}
+@media(max-width:600px){.rosebox{grid-template-columns:minmax(0,1fr)}.rosefig{max-width:260px;margin:auto;width:100%}}
 </style></head><body>
 <div class="band">
 <h1>Live ship motion · cabin 9004</h1>
@@ -63,10 +67,22 @@ details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;
 <div class="ctl">
 <select id="exa" aria-label="Vertical scale"><option value="1">True scale</option><option value="3">Motion and waves ×3</option><option value="5" selected>Motion and waves ×5</option><option value="10">Motion and waves ×10</option></select>
 <select id="kn" aria-label="Ship speed (assumed)"><option value="0">Ship stopped</option><option value="10">10 kn</option><option value="14">14 kn</option><option value="17" selected>17 kn</option><option value="21">21 kn</option></select>
-<select id="dir" aria-label="Waves come from"><option value="25" selected>Waves from 25° off stbd bow</option><option value="0">Waves from dead ahead</option><option value="-25">Waves from 25° off port bow</option><option value="90">Waves from starboard beam</option><option value="-90">Waves from port beam</option><option value="180">Waves from astern</option></select>
+<select id="dir" aria-label="Waves come from"><option value="auto" selected>Wave direction: from data</option><option value="25">Waves from 25° off stbd bow</option><option value="0">Waves from dead ahead</option><option value="-25">Waves from 25° off port bow</option><option value="90">Waves from starboard beam</option><option value="-90">Waves from port beam</option><option value="180">Waves from astern</option></select>
 <button id="reset">Reset view</button>
 </div>
 <p id="wstat" class="lede" style="margin:0 0 12px">Waiting for 40 s of data to build the sea…</p>
+<div class="rosebox">
+<div class="rosefig"><canvas id="rose"></canvas></div>
+<div class="rosetxt">
+<h2 id="roseHead">Wave rose</h2>
+<p id="roseLine" class="lede">Like a wind rose: each petal shows how much wave energy has come from that direction, colored by wave height. It builds up every 10 s after the first 90 s.</p>
+<p class="lede" style="font-size:14px">The compass inside a steel ship can be off by 10–30°. For a true heading, read it off the cabin TV's navigation channel and set it here.</p>
+<div class="ctl" style="margin:10px 0 0">
+<label class="fld">TV heading <input id="tvHdg" inputmode="decimal" placeholder="°"></label><button id="calBtn">Set</button><button id="calClr">Clear</button>
+</div>
+<div class="leg" id="roseLeg" style="margin-top:12px"></div>
+<div class="ctl" style="margin:8px 0 0"><button id="roseClr">Clear wave rose</button></div>
+</div></div>
 <div class="fig v3" id="fc"><canvas id="cc"></canvas><div class="cap">Corner view from forward-starboard, 45° down · drag to rotate</div><div class="lbl" id="lc">9004</div><div id="err">3D view needs WebGL, which this browser has turned off.</div></div>
 <div class="views">
 <div class="fig v3" id="fs"><canvas id="cs"></canvas><div class="cap">Side cut along the centreline · heave, pitch, surge</div></div>
@@ -103,21 +119,34 @@ const LEV={x:100,z:11,s:15};
 const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
 let raw={l:{t:[],x:[],y:[],z:[]},g:{t:[],x:[],y:[],z:[]}},lastT=null,gridNext=null,rateCount=0,rateT=performance.now(),lastMsg=0,clients=[],demoTimer=null,mode='';
 function msg(t){$('msg').textContent=t||''}
-function restart(){raw={l:{t:[],x:[],y:[],z:[]},g:{t:[],x:[],y:[],z:[]}};lastT=null;gridNext=null;for(const k in D)if(Array.isArray(D[k]))D[k].length=0;resetFilters();rawW=null;sets=[];lastBuild=0}
+function restart(){raw={l:{t:[],x:[],y:[],z:[]},g:{t:[],x:[],y:[],z:[]}};lastT=null;gridNext=null;for(const k in D)if(Array.isArray(D[k]))D[k].length=0;resetFilters();rawW=null;sets=[];lastBuild=0;tStart=null}
 function addSamples(rows){for(const r of rows){const t=r[0];if(lastT!=null&&t<lastT-5){restart()}if(lastT!=null&&t<=lastT)continue;
   raw.l.t.push(t);raw.l.x.push(r[1]);raw.l.y.push(r[2]);raw.l.z.push(r[3]);raw.g.t.push(t);raw.g.x.push(r[4]);raw.g.y.push(r[5]);raw.g.z.push(r[6]);lastT=t;rateCount++}
   lastMsg=performance.now();process()}
+/* ---------- compass ---------- */
+let hdgVec=null,hdgAcc=null,hdgAt=0,calOff=0;try{calOff=+localStorage.getItem('shipcal')||0}catch(e){}
+function addHeading(h,acc){const b=(h+180)*RAD;// phone top points aft
+  const v=[Math.cos(b),Math.sin(b)];hdgVec=hdgVec?[hdgVec[0]*0.85+v[0]*0.15,hdgVec[1]*0.85+v[1]*0.15]:v;hdgAcc=acc;hdgAt=performance.now()}
+const norm=a=>((a%360)+360)%360;
+function rawHeading(){return hdgVec?norm(Math.atan2(hdgVec[1],hdgVec[0])/RAD):null}
+function shipHeading(){const r=rawHeading();return r==null?null:norm(r+calOff)}
+$('calBtn').addEventListener('click',()=>{const tv=parseFloat($('tvHdg').value),r=rawHeading();if(isNaN(tv)){msg('Type the heading from the TV first.');return}if(r==null){msg('No compass data from the phone yet.');return}
+  calOff=norm(tv-r);if(calOff>180)calOff-=360;try{localStorage.setItem('shipcal',calOff)}catch(e){}msg('Compass corrected by '+(calOff>0?'+':'')+calOff.toFixed(0)+'°.')});
+setTimeout(()=>{$('roseLeg').innerHTML=BANDS.map(b=>'<span><i style="background:'+b[2]+';height:10px"></i>'+(b[1]>50?b[0]+'+ ft':b[0]+'–'+b[1]+' ft')+'</span>').join('')+'<span>significant wave height</span>'},0);
+$('roseClr').addEventListener('click',()=>{rose=rose.map(r=>r.map(()=>0));roseN=0});
+$('calClr').addEventListener('click',()=>{calOff=0;try{localStorage.removeItem('shipcal')}catch(e){}$('tvHdg').value='';msg('Compass correction cleared.')});
+const PTS=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'],pt=a=>PTS[Math.round(norm(a)/22.5)%16];
 function disconnect(){for(const c of clients)c.end(true);clients=[];if(demoTimer){clearInterval(demoTimer);demoTimer=null}}
 function join(code){code=String(code||'').trim();if(!/^\d{4}$/.test(code)){msg('Enter the 4-digit code shown on the phone.');return}
   disconnect();restart();mode='live';msg('');try{localStorage.setItem('shiproom',code)}catch(e){}
   const topic='shipmotion-v1/'+code;$('conn').textContent='Connecting to relay…';$('dot').className='dot warn';
   for(const url of BROKERS){try{const c=mqtt.connect(url,{clientId:'ship-d-'+code+'-'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,clean:true});
     c.on('connect',()=>{c.subscribe(topic);if(!lastMsg){$('conn').textContent='Relay connected, waiting for phone '+code+'…'}});
-    c.on('message',(tp,payload)=>{try{const j=JSON.parse(payload.toString());if(j&&j.v===1&&Array.isArray(j.s))addSamples(j.s)}catch(e){}});
+    c.on('message',(tp,payload)=>{try{const j=JSON.parse(payload.toString());if(j&&j.v===1&&Array.isArray(j.s)){addSamples(j.s);if(typeof j.h==='number')addHeading(j.h,j.ha)}}catch(e){}});
     c.on('error',()=>{});clients.push(c)}catch(e){}}}
 async function demo(){disconnect();restart();mode='demo';msg('');$('conn').textContent='Loading demo…';
   try{const txt=await(await fetch('demo.csv')).text();const rows=txt.trim().split('\n').slice(1).map(l=>l.split(',').map(Number));const per=rows[rows.length-1][0]+0.02,start=performance.now();let i=0,lap=0;
-    demoTimer=setInterval(()=>{const tt=(performance.now()-start)/1000,out=[];while(true){const r=rows[i];const t=r[0]+lap*per;if(t>tt)break;out.push([t,...r.slice(1)]);i++;if(i>=rows.length){i=0;lap++}}if(out.length)addSamples(out)},100)}
+    demoTimer=setInterval(()=>{const tt=(performance.now()-start)/1000,out=[];while(true){const r=rows[i];const t=r[0]+lap*per;if(t>tt)break;out.push([t,...r.slice(1)]);i++;if(i>=rows.length){i=0;lap++}}if(out.length){addSamples(out);addHeading(20+3*Math.sin(tt/40))}},100)}
   catch(e){msg('Demo data did not load: '+e.message)}}
 $('joinBtn').addEventListener('click',()=>join($('room').value));
 $('room').addEventListener('keydown',e=>{if(e.key==='Enter')join($('room').value)});
@@ -135,7 +164,7 @@ function process(){const L=raw.l.t,G=raw.g.t;if(L.length<2||G.length<2)return;
     const lx=interp('l','x',t,hint),ly=interp('l','y',t,hint),lz=interp('l','z',t,hint),gx=interp('g','x',t,hint),gy=interp('g','y',t,hint);
     const su=F.su(-ly),sw=F.sw(-lx),he=F.he(lz),pi=F.pi(-gx)/RAD,ro=F.ro(-gy)/RAD;
     const hc=he-LEV.x*pi*RAD+LEV.s*ro*RAD,sc=su+LEV.z*pi*RAD,wc=sw-LEV.z*ro*RAD;
-    D.t.push(t);D.hc.push(hc);D.sc.push(sc);D.wc.push(wc);D.pitch.push(pi);D.roll.push(ro);D.hp.push(he);D.wp.push(sw);gridNext=+(gridNext+DT).toFixed(4)}
+    if(tStart==null)tStart=t;D.t.push(t);D.hc.push(hc);D.sc.push(sc);D.wc.push(wc);D.pitch.push(pi);D.roll.push(ro);D.hp.push(he);D.wp.push(sw);gridNext=+(gridNext+DT).toFixed(4)}
   const keep=t=>{const k=raw[t].t.findIndex(v=>v>end-5);if(k>0)for(const c of['t','x','y','z'])raw[t][c].splice(0,k)};keep('l');keep('g');
   const over=D.t.length-KEEP;if(over>200){for(const k in D)if(Array.isArray(D[k]))D[k].splice(0,over);D.t0=D.t[0]}
   lastData=performance.now()}
@@ -157,15 +186,34 @@ function buildComps(W){const U=+$('kn').value*0.5144,dx=Math.cos(MU),dz=Math.sin
   return W.c.map(([we,a,p])=>{const w=U===0||Math.abs(c)<1e-6?we:(-1+Math.sqrt(Math.max(0,1+4*(c/g)*we)))/(2*c/g);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
     return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w]})}
 function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
-  const kn=$('kn').value,dirTxt=$('dir').selectedOptions[0].textContent.replace('Waves from ','');
+  const kn=$('kn').value,rel=currentRel(),dirTxt=Math.abs(rel)<8?'dead ahead':Math.abs(rel)>172?'astern':Math.round(Math.abs(rel))+'° off '+(rel>0?'starboard':'port')+(Math.abs(rel)<90?' bow':Math.abs(rel)>90?' quarter':' beam')+($('dir').value==='auto'?' (from data)':'');
   $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'. Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
-let lastBuild=0;
-function rebuild(force){if(!force&&performance.now()-lastBuild<10000)return;const W=dftWindow();if(!W)return;lastBuild=performance.now();rawW=W;const c=buildComps(W);
+let lastBuild=0,dirEst=[],relFrom=25,dirSpread=null;
+// pitch/roll as surface-slope proxies (wave-buoy method): per frequency, the quadrature between heave and the slopes gives travel direction
+const BANDS=[[0,3,'#2e6f9e'],[3,6,'#3f9bd0'],[6,9,'#8fd3ff'],[9,12,'#ffd27a'],[12,99,'#ff7a3d']];
+let rose=Array.from({length:16},()=>BANDS.map(()=>0)),roseN=0,roseRel=false,tStart=null;
+function estimateDir(hsFt){const settled=tStart==null?0:Math.max(0,Math.round((tStart+30-D.t0)/DT));const n=Math.min(D.t.length-settled,180/DT);if(n<90/DT)return;
+  const h=D.hc.slice(-n),p=D.pitch.slice(-n),r=D.roll.slice(-n);const mean=a=>a.reduce((x,v)=>x+v,0)/a.length,mh=mean(h),mp=mean(p),mr=mean(r),Tw=n*DT;
+  const bins=[];let Qx=0,Qz=0,Etot=0;
+  for(let j=Math.ceil(0.08*Tw);j<=Math.floor(0.2*Tw);j++){const w=2*Math.PI*j/Tw*DT;let hr=0,hi=0,pr=0,pi=0,rr=0,ri=0;
+    for(let i=0;i<n;i++){const c=Math.cos(w*i),s=Math.sin(w*i),hv=h[i]-mh,pv=(p[i]-mp)*RAD,rv=-(r[i]-mr)*RAD;hr+=hv*c;hi-=hv*s;pr+=pv*c;pi-=pv*s;rr+=rv*c;ri-=rv*s}
+    const qx=hr*pi-hi*pr,qz=hr*ri-hi*rr,E=hr*hr+hi*hi;Qx+=qx;Qz+=qz;Etot+=E;bins.push([norm(Math.atan2(-qz,-qx)/RAD+180),E])}
+  let from=norm(Math.atan2(-Qz,-Qx)/RAD+180);if(from>180)from-=360;dirEst.push(from);if(dirEst.length>6)dirEst.shift();
+  let cx=0,cy=0;for(const a of dirEst){cx+=Math.cos(a*RAD);cy+=Math.sin(a*RAD)}const R=Math.hypot(cx,cy)/dirEst.length;relFrom=Math.atan2(cy,cx)/RAD;
+  dirSpread=dirEst.length>1?Math.sqrt(-2*Math.log(Math.max(R,1e-6)))/RAD:null;
+  // add to the rose: compass bearing if we have a heading, otherwise relative to the bow
+  const hd=shipHeading();if(roseN&&roseRel!==(hd==null)){rose=rose.map(r=>r.map(()=>0));roseN=0}roseRel=hd==null;
+  const bi=BANDS.findIndex(b=>hsFt>=b[0]&&hsFt<b[1]);if(!Etot||bi<0)return;
+  for(const[a,E]of bins){const sec=Math.round(norm(a+(hd||0))/22.5)%16;rose[sec][bi]+=E/Etot}roseN++}
+function hsOf(cs){let e=0;for(const c of cs)e+=c[2]*c[2]/2;return 4*Math.sqrt(e)}
+function currentRel(){return $('dir').value==='auto'?relFrom:+$('dir').value}
+function applyDir(){const m=(180+currentRel())*RAD;if(Math.abs(m-MU)<2*RAD)return false;MU=m;if(arrow)arrow.setDirection(new THREE.Vector3(Math.cos(MU),0,Math.sin(MU)));return true}
+function rebuild(force){if(!force&&performance.now()-lastBuild<10000)return;const W=dftWindow();if(!W)return;lastBuild=performance.now();rawW=W;let c=buildComps(W);estimateDir(hsOf(c)*FT);if($('dir').value==='auto'&&applyDir())c=buildComps(W);
   sets=[...sets.slice(-1).map(s=>({...s,from:s.w})),{c,pre:precompute(c),w:0,born:performance.now()}];waveText(c)}
 function mixComps(){const now=performance.now();if(sets.length>1){const nw=sets[sets.length-1];nw.w=Math.min(1,(now-nw.born)/3000);sets[0].w=1-nw.w;if(nw.w>=1)sets=[nw]}else if(sets.length)sets[0].w=1;
   comps=[];for(const s of sets)for(const c of s.c)comps.push([c[0],c[1],c[2]*s.w,c[3]])}
 $('kn').addEventListener('change',()=>{if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
-$('dir').addEventListener('change',()=>{MU=(180+ +$('dir').value)*RAD;if(arrow)arrow.setDirection(new THREE.Vector3(Math.cos(MU),0,Math.sin(MU)));if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
+$('dir').addEventListener('change',()=>{applyDir();if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
 
 /* ---------- ship geometry (x forward, y up from waterline, z starboard) ---------- */
 const hw=x=>x>40?16*Math.sqrt(Math.max(0.004,1-((x-40)/110)**2)):x<-115?16-2.5*((-115-x)/29)**2:16;
@@ -317,11 +365,33 @@ function trace(id,series,mult,sc0,ticks,unit){const[x,W,H]=fit2($(id));x.clearRe
   x.fillStyle='#9fb8d0';x.font='13px Barlow,sans-serif';for(const m of[ticks[0],0,ticks[ticks.length-1]])x.fillText((m>0?'+':'')+m+unit,6,mid-m*sc-4);
   if(D.t.length<2)return;const i0=Math.max(0,Math.floor((t0-D.t0)/DT)),i1=Math.min(D.t.length-1,Math.ceil((t1-D.t0)/DT));
   for(const[a,c,w]of series){x.strokeStyle=c;x.lineWidth=w;x.beginPath();for(let i=i0;i<=i1;i++){const px=sx(D.t[i]),py=mid-a[i]*mult*sc;i>i0?x.lineTo(px,py):x.moveTo(px,py)}x.stroke()}}
+function drawRose(){const[x,W,H]=fit2($('rose'));x.clearRect(0,0,W,H);const cx=W/2,cy=H/2,R=Math.min(W,H)/2-22;
+  const hd=shipHeading(),useCompass=!roseRel&&hd!=null;
+  const P=(b,r)=>[cx+r*Math.sin(b*RAD),cy-r*Math.cos(b*RAD)];
+  x.fillStyle='rgba(18,55,94,.55)';x.beginPath();x.arc(cx,cy,R,0,7);x.fill();
+  const tot=rose.reduce((a,r)=>a+r.reduce((p,v)=>p+v,0),0),mx=Math.max(1e-9,...rose.map(r=>r.reduce((p,v)=>p+v,0)/(tot||1)));
+  const ringStep=mx>0.3?0.1:mx>0.12?0.05:0.025;x.strokeStyle='rgba(159,184,208,.28)';x.lineWidth=1;x.fillStyle='#9fb8d0';x.font='11px Barlow,sans-serif';x.textAlign='left';x.textBaseline='middle';
+  if(tot)for(let v=ringStep;v<=mx+1e-9;v+=ringStep){const rr=v/mx*(R-4);x.beginPath();x.arc(cx,cy,rr,0,7);x.stroke();x.fillText(Math.round(v*100)+'%',cx+3,cy-rr-6)}
+  for(let a=0;a<360;a+=22.5){const[a1,b1]=P(a,R),[a2,b2]=P(a,R-(a%90?5:10));x.strokeStyle=a%90?'#4d7397':'#eef6ff';x.lineWidth=a%90?1:2;x.beginPath();x.moveTo(a1,b1);x.lineTo(a2,b2);x.stroke()}
+  // petals: stacked by wave height band, width 22.5°
+  if(tot)for(let k=0;k<16;k++){let r0=0;const c=k*22.5,hw=9.5;rose[k].forEach((v,bi)=>{if(!v)return;const r1=r0+v/tot/mx*(R-4);
+    x.fillStyle=BANDS[bi][2];x.beginPath();x.arc(cx,cy,r1,(c-hw-90)*RAD,(c+hw-90)*RAD);x.arc(cx,cy,r0,(c+hw-90)*RAD,(c-hw-90)*RAD,true);x.closePath();x.fill();r0=r1})}
+  x.font='700 15px Barlow,sans-serif';x.textAlign='center';
+  if(useCompass)for(const[l,a]of[['N',0],['E',90],['S',180],['W',270]]){const[p,q]=P(a,R+12);x.fillStyle=l==='N'?'#ff7a3d':'#9fb8d0';x.fillText(l,p,q)}
+  else{const[p,q]=P(0,R+12);x.fillStyle='#9fb8d0';x.fillText('bow',p,q)}
+  // ship at the centre, pointing along its heading
+  x.save();x.translate(cx,cy);x.rotate((useCompass?hd:0)*RAD);const s=Math.min(28,R*0.22);x.fillStyle='#f7f9fb';x.strokeStyle='#0a2540';x.lineWidth=1.5;x.beginPath();x.moveTo(0,-s);x.quadraticCurveTo(s*0.3,-s*0.5,s*0.28,0);x.lineTo(s*0.28,s);x.lineTo(-s*0.28,s);x.lineTo(-s*0.28,0);x.quadraticCurveTo(-s*0.3,-s*0.5,0,-s);x.fill();x.stroke();x.restore();
+  x.textAlign='left';x.textBaseline='alphabetic';
+  const hdTxt=hd==null?null:Math.round(hd).toString().padStart(3,'0')+'° '+pt(hd)+(calOff?' (TV-corrected)':' magnetic');
+  const rel=currentRel(),cur=sets.length?(hd==null?Math.round(Math.abs(rel))+'° '+(rel>=0?'starboard':'port')+' of the bow':Math.round(norm(hd+rel)).toString().padStart(3,'0')+'° '+pt(hd+rel))+($('dir').value==='auto'&&dirSpread!=null?' (±'+Math.min(90,Math.round(dirSpread))+'°)':''):null;
+  $('roseHead').textContent=hdTxt?'Heading '+hdTxt:'Wave rose (no compass yet)';
+  $('roseLine').textContent=(cur?'Waves now mainly from '+cur+'. ':'Waves: building… ')+(roseN?'Rose built from '+Math.round(roseN*10/60)+' min of data.':'The rose starts after 90 s.')+(hdgAcc!=null&&hdgAcc>25?' Compass accuracy is poor (±'+Math.round(hdgAcc)+'°).':'')}
+function arrowLine(x,a1,b1,a2,b2,c,w){x.strokeStyle=c;x.fillStyle=c;x.lineWidth=w;x.lineCap='round';x.beginPath();x.moveTo(a1,b1);x.lineTo(a2,b2);x.stroke();const an=Math.atan2(b2-b1,a2-a1),L=12;x.beginPath();x.moveTo(a2+Math.cos(an)*4,b2+Math.sin(an)*4);x.lineTo(a2-Math.cos(an-0.45)*L,b2-Math.sin(an-0.45)*L);x.lineTo(a2-Math.cos(an+0.45)*L,b2-Math.sin(an+0.45)*L);x.closePath();x.fill()}
 let tNow=0,lastFrame=null,lastStats=0;
 function frame(ts){const dt=lastFrame==null?0:(ts-lastFrame)/1000;lastFrame=ts;
   if(D.t.length>1){const target=D.t[D.t.length-1]-0.3;tNow=Math.abs(target-tNow)>1?target:Math.min(target,tNow+dt)}
   if(ts-lastStats>1000){lastStats=ts;stats();rebuild(false);const r=rateCount/((ts-rateT)/1000);rateCount=0;rateT=ts;$('rate').textContent=r>0?Math.round(r)+' samples/s':''}
-  mixComps();
+  mixComps();drawRose();
   if(ok&&D.t.length>1){try{render3d()}catch(e){ok=false;$('err').style.display='block';console.error(e)}}
   if(D.t.length>1)draw2d();
   trace('tr',[[D.wp,'#8fd3ff',1.6],[D.hc,'#eef6ff',1.8],[D.hp,'#ff7a3d',2.2]],FT,18,[-6,-3,0,3,6],' ft');
