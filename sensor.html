@@ -27,7 +27,9 @@ button.sec{background:#12375e;color:var(--ink);border:1px solid var(--line)}
 <div class="code" id="code">----</div>
 <div class="row"><span>Phone flat</span><b id="flat">…</b></div>
 <div class="row"><span>Sensor rate</span><b id="rate">…</b></div>
+<div class="row"><span>Gyro check</span><b id="gchk">checking…</b></div>
 <div class="row"><span>Compass (ship heading)</span><b id="hdg">…</b></div>
+<div class="row"><span>GPS</span><b id="gps">…</b></div>
 <div class="row"><span>Relay</span><b id="relay">connecting…</b></div>
 <div class="row"><span>Sent</span><b id="sent">0 s</b></div>
 <div class="row"><span>Screen kept on</span><b id="wake">…</b></div>
@@ -41,22 +43,32 @@ const $=id=>document.getElementById(id);
 const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
 const code=String(Math.floor(1000+Math.random()*9000));
 const topic='shipmotion-v1/'+code;
-let hdgRaw=null,hdgAcc=null,buf=[],clients=[],n=0,t0=null,flip=1,gSum=[0,0,0],gN=0,lastRate=performance.now(),started=0,wakeLock=null,running=false;
+let fix=null,fixSent=0,hdgRaw=null,hdgAcc=null,buf=[],clients=[],n=0,t0=null,flip=1,gSum=[0,0,0],gN=0,lastRate=performance.now(),started=0,wakeLock=null,running=false;
 const RAD=Math.PI/180;
+// gyro sign self-check: tilt rate from the gravity vector must agree with the gyro; browsers differ on rotationRate signs
+let gs={x:{s:0,a:0,b:0},y:{s:0,a:0,b:0}},sx=1,sy=1,prevTh=null,prevT=null;
+function gyroCheck(g,wx,wy,t){const thx=Math.atan2(g[1],g[2]),thy=Math.atan2(-g[0],g[2]);
+  if(prevTh&&t>prevT){const dt=t-prevT,dx=(thx-prevTh[0])/dt,dy=(thy-prevTh[1])/dt;
+    if(Math.abs(dx)<1&&Math.abs(dy)<1){gs.x.s+=dx*wx;gs.x.a+=dx*dx;gs.x.b+=wx*wx;gs.y.s+=dy*wy;gs.y.a+=dy*dy;gs.y.b+=wy*wy}}
+  prevTh=[thx,thy];prevT=t}
+function corr(k){return gs[k].s/Math.sqrt(gs[k].a*gs[k].b||1)}
 function onMotion(e){
   const a=e.acceleration,g=e.accelerationIncludingGravity,r=e.rotationRate;
   if(!a||a.x==null||!r){$('err').textContent='This phone is not giving gravity-free acceleration.';return}
-  if(g&&g.x!=null){gSum[0]+=g.x-a.x;gSum[1]+=g.y-a.y;gSum[2]+=g.z-a.z;gN++}
   const t=performance.now()/1000;if(t0==null)t0=t;
+  if(g&&g.x!=null){const gv=[flip*(g.x-a.x),flip*(g.y-a.y),flip*(g.z-a.z)];gSum[0]+=gv[0];gSum[1]+=gv[1];gSum[2]+=gv[2];gN++;gyroCheck(gv,(r.beta||0)*RAD,(r.gamma||0)*RAD,t)}
   // phone axes: x right, y toward top, z out of the screen (same as phyphox); gyro in rad/s about x, y, z
   buf.push([+(t-t0).toFixed(3),+(flip*a.x).toFixed(4),+(flip*a.y).toFixed(4),+(flip*a.z).toFixed(4),
-            +((r.beta||0)*RAD).toFixed(5),+((r.gamma||0)*RAD).toFixed(5),+((r.alpha||0)*RAD).toFixed(5)]);
+            +(sx*(r.beta||0)*RAD).toFixed(5),+(sy*(r.gamma||0)*RAD).toFixed(5),+((r.alpha||0)*RAD).toFixed(5)]);
   n++}
 function onOrient(e){let h=null;if(typeof e.webkitCompassHeading==='number')h=e.webkitCompassHeading;else if(e.absolute&&e.alpha!=null)h=(360-e.alpha)%360;
   if(h!=null){hdgRaw=h;hdgAcc=typeof e.webkitCompassAccuracy==='number'?e.webkitCompassAccuracy:null}}
+function onFix(p){const c=p.coords;fix=[+c.latitude.toFixed(6),+c.longitude.toFixed(6),Math.round(c.accuracy),c.speed!=null&&c.speed>=0?+c.speed.toFixed(2):null,c.heading!=null&&!isNaN(c.heading)?+c.heading.toFixed(1):null,Math.round(p.timestamp/1000)];
+  $('gps').textContent='±'+fix[2]+' m'+(fix[3]!=null?' · '+(fix[3]*1.944).toFixed(1)+' kn':'');$('gps').className=fix[2]<100?'ok':'warn'}
+function onFixErr(e){$('gps').textContent=e.code===1?'not allowed':'no signal (try near a window)';$('gps').className='warn'}
 function send(){
   if(!running)return;
-  if(buf.length){const o={v:1,s:buf};if(hdgRaw!=null){o.h=+hdgRaw.toFixed(1);if(hdgAcc!=null)o.ha=hdgAcc}const msg=JSON.stringify(o);buf=[];let any=false;
+  if(buf.length){const o={v:1,s:buf};if(hdgRaw!=null){o.h=+hdgRaw.toFixed(1);if(hdgAcc!=null)o.ha=hdgAcc}if(fix&&fix[5]!==fixSent){o.p=fix;fixSent=fix[5]}o.gs=[sx,sy];const msg=JSON.stringify(o);buf=[];let any=false;
     for(const c of clients)if(c.connected){c.publish(topic,msg,{qos:0});any=true}
     $('relay').textContent=any?clients.filter(c=>c.connected).length+' connected':'reconnecting…';$('relay').className=any?'ok':'warn'}
   const now=performance.now();
@@ -64,11 +76,13 @@ function send(){
     $('rate').textContent=Math.round(n/((now-lastRate)/1000))+' Hz';n=0;lastRate=now;
     if(gN>20){const gx=gSum[0]/gN,gy=gSum[1]/gN,gz=gSum[2]/gN,m=Math.hypot(gx,gy,gz);
       // gravity should read +9.8 on z when screen-up; if this browser reports it flipped, flip acceleration to match
-      if(gz<0&&flip===1&&Math.abs(gz)>0.8*m)flip=-1;
+      if(gz<0&&Math.abs(gz)>0.8*m){flip=-flip;gs={x:{s:0,a:0,b:0},y:{s:0,a:0,b:0}};prevTh=null}
       const tilt=Math.acos(Math.min(1,Math.abs(gz)/m))/RAD;
       $('flat').textContent=tilt<5?'Yes ('+tilt.toFixed(1)+'° tilt)':'Tilted '+tilt.toFixed(0)+'°';$('flat').className=tilt<5?'ok':'warn';
       gSum=[0,0,0];gN=0}
     $('sent').textContent=Math.round((now-started)/1000)+' s';
+    {const cx=corr('x'),cy=corr('y'),okx=(now-started)>20000&&Math.abs(cx)>0.3,oky=(now-started)>20000&&Math.abs(cy)>0.3,ok=okx&&oky;if(okx)sx=cx>0?1:-1;if(oky)sy=cy>0?1:-1;
+     $('gchk').textContent=ok?(sx<0||sy<0?'corrected ('+(sx<0?'pitch':'')+(sx<0&&sy<0?' + ':'')+(sy<0?'roll':'')+' flipped)':'OK'):'checking… ('+Math.abs(cx).toFixed(2)+', '+Math.abs(cy).toFixed(2)+')';$('gchk').className=ok?'ok':'warn'}
     // the phone's top points aft, so the ship's bow is 180° from the phone's compass heading
     if(hdgRaw!=null){$('hdg').textContent=Math.round((hdgRaw+180)%360)+'° magnetic'+(hdgAcc!=null&&hdgAcc>=0?' (±'+Math.round(hdgAcc)+'°)':'');$('hdg').className=hdgAcc!=null&&hdgAcc>25?'warn':'ok'}else{$('hdg').textContent='not available';$('hdg').className='warn'}}
   setTimeout(send,100)}
@@ -81,6 +95,7 @@ $('go').addEventListener('click',async()=>{
   window.addEventListener('devicemotion',onMotion);window.addEventListener('deviceorientation',onOrient);window.addEventListener('deviceorientationabsolute',onOrient);
   $('setup').style.display='none';$('live').style.display='block';$('code').textContent=code;
   running=true;started=performance.now();keepAwake();
+  if(navigator.geolocation)navigator.geolocation.watchPosition(onFix,onFixErr,{enableHighAccuracy:true,maximumAge:2000,timeout:30000});else{$('gps').textContent='not available'}
   for(const url of BROKERS){try{const c=mqtt.connect(url,{clientId:'ship-s-'+code+'-'+Math.random().toString(16).slice(2,8),reconnectPeriod:3000,connectTimeout:8000,clean:true});c.on('error',()=>{});clients.push(c)}catch(e){}}
   send()});
 $('stop').addEventListener('click',()=>{running=false;window.removeEventListener('devicemotion',onMotion);for(const c of clients)c.end(true);clients=[];if(wakeLock)wakeLock.release();location.reload()});
