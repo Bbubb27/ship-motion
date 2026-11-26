@@ -217,7 +217,7 @@ function process(){const L=raw.l.t,G=raw.g.t;if(L.length<2||G.length<2)return;
 function rms(a,n){const s=a.slice(-n);if(!s.length)return 0;const m=s.reduce((p,v)=>p+v,0)/s.length;return Math.sqrt(s.reduce((p,v)=>p+(v-m)**2,0)/s.length)}
 function peakPeriod(a,n){const s=a.slice(-n);if(s.length<400)return null;const fs=[],ps=[];for(let f=0.05;f<=0.3;f+=0.0025){let re=0,im=0;const w=2*Math.PI*f*DT;for(let i=0;i<s.length;i++){re+=s[i]*Math.cos(w*i);im-=s[i]*Math.sin(w*i)}fs.push(f);ps.push(re*re+im*im)}
   let best=0,bf=0.1;for(let i=4;i<ps.length-4;i++){let p=0;for(let j=-4;j<=4;j++)p+=ps[i+j];if(p>best){best=p;bf=fs[i]}}return 1/bf}
-function stats(){const n=60/DT;if(D.t.length<200)return;
+function stats(){const n=60/DT;if(D.t.length<200)return;{const a=rms(D.hp,30/DT),b=rms(D.hp,180/DT);const tgt=b>1e-6?Math.max(0.5,Math.min(1.8,a/b)):1;modScale+=0.25*(tgt-modScale)}
   $('k1').textContent='±'+(rms(D.hp,n)*FT).toFixed(1)+' ft';$('k2').textContent='±'+(rms(D.hc,n)*FT).toFixed(1)+' ft';
   $('k4').textContent='±'+rms(D.pitch,n).toFixed(2)+'°';$('k5').textContent='±'+rms(D.roll,n).toFixed(2)+'°';$('k6').textContent='±'+(rms(D.wp,n)*FT).toFixed(1)+' ft';
   const T=peakPeriod(D.hp,120/DT);if(T)$('k3').textContent=T.toFixed(1)+' s'}
@@ -238,8 +238,22 @@ function buildComps(W){const U=speedKn()*0.5144,dx=Math.cos(MU),dz=Math.sin(MU),
   const A=dx*U/g,wm=sea.T?2*Math.PI/sea.T:null;
   const resp=w=>{const k=w*w/g;return sinc(k*dx*LW/2)*sinc(k*dz*BW/2)};
   return W.c.map(([we,a,p])=>{const w=trueOmega(we,A,wm,resp);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
-    return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w]})}
-function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
+    return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w,dx,dz,h]})}
+/* hybrid sea: when the measured motion can't come from waves the hull feels (typical when running ahead of a quartering sea),
+   take wave lengths and directions from the live ocean model, keep the size pulsing with the measured motion */
+let modScale=1,seaMode='data';
+const phase0=j=>{const v=Math.sin(j*12.9898+78.233)*43758.5453;return(v-Math.floor(v))*2*Math.PI};
+function modelComps(){const hd=shipHeading();if(sea.hs==null||hd==null)return null;const U=speedKn()*0.5144,out=[];
+  const sys=[[sea.sh,sea.sp,sea.sd],[sea.wh,sea.wp,sea.wd]].filter(v=>v[0]>0.3&&v[1]>0&&v[2]!=null);if(!sys.length)sys.push([sea.hs,sea.T,sea.dir]);
+  let j=0;for(const[Hft,Tp,from]of sys){const H=Hft/FT,wp=2*Math.PI/Tp,list=[];
+    for(let i=0;i<12;i++){const w=wp*(0.75+i*0.11),S=Math.pow(w,-5)*Math.exp(-1.25*Math.pow(wp/w,4));list.push([w,S])}
+    const tot=list.reduce((a,v)=>a+v[1],0);
+    list.forEach(([w,S],i)=>{const a=H/4*Math.sqrt(2*S/tot),rel=norm(from-hd)+[-20,-10,0,10,20,-5,5,-15,15,0,-8,8][i],mu=(180+rel)*RAD,dx=Math.cos(mu),dz=Math.sin(mu),k=w*w/g;
+      out.push([k,w-k*U*dx,a,phase0(j++),w,dx,dz,1])})}
+  return out}
+function illPosed(c){let bad=0,all=0;for(const x of c){const e=x[2]*x[2]*x[7]*x[7];all+=e;if(Math.abs(x[7])<0.15)bad+=e}return all>0?bad/all:0}
+function waveText(cs){if(!cs.length)return;if(seaMode==='model'){const f=v=>v==null?'?':Math.round(v);
+  $('wstat').textContent='Sea shape from the ocean model at your position: swell '+(sea.sh??0).toFixed(1)+' ft at '+f(sea.sp)+' s from '+f(sea.sd)+'°, wind waves '+(sea.wh??0).toFixed(1)+' ft at '+f(sea.wp)+' s from '+f(sea.wd)+'°. Its size pulses with your measured motion (now ×'+modScale.toFixed(2)+'). Running ahead of a quartering sea at '+Math.round(speedKn())+' kn, the ship mostly rocks at its own natural rhythm, so its motion alone can\'t pin down the waves.';return}let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
   const knv=speedKn(),kn=$('kn').value==='gps'&&!(gpsFresh()&&sog!=null)?'17 (no GPS yet)':String(Math.round(knv)),rel=currentRel(),dirTxt=Math.abs(rel)<8?'dead ahead':Math.abs(rel)>172?'astern':Math.round(Math.abs(rel))+'° off '+(rel>0?'starboard':'port')+(Math.abs(rel)<90?' bow':Math.abs(rel)>90?' quarter':' beam')+($('dir').value==='auto'?' (from data)':'');
   $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'.'+(sea.T?' Wave length matched to the ocean model\'s '+Math.round(sea.T)+' s period.':'')+' Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
 let lastBuild=0,dirEst=[],relFrom=25,dirSpread=null;
@@ -250,7 +264,7 @@ function estimateDir(hsFt){const settled=tStart==null?0:Math.max(0,Math.round((t
   const h=D.hc.slice(-n),p=D.pitch.slice(-n),r=D.roll.slice(-n);const mean=a=>a.reduce((x,v)=>x+v,0)/a.length,mh=mean(h),mp=mean(p),mr=mean(r),Tw=n*DT;
   const bins=[];let Qx=0,Qz=0,Etot=0;
   for(let j=Math.ceil(0.08*Tw);j<=Math.floor(0.2*Tw);j++){const w=2*Math.PI*j/Tw*DT;let hr=0,hi=0,pr=0,pi=0,rr=0,ri=0;
-    for(let i=0;i<n;i++){const c=Math.cos(w*i),s=Math.sin(w*i),hv=h[i]-mh,pv=(p[i]-mp)*RAD,rv=-(r[i]-mr)*RAD;hr+=hv*c;hi-=hv*s;pr+=pv*c;pi-=pv*s;rr+=rv*c;ri-=rv*s}
+    for(let i=0;i<n;i++){const c=Math.cos(w*i),s=Math.sin(w*i),hv=h[i]-mh,pv=(p[i]-mp)*RAD,rv=(r[i]-mr)*RAD;/* a big ship's roll lags the sea by ~180° for waves quicker than its ~20 s natural roll */hr+=hv*c;hi-=hv*s;pr+=pv*c;pi-=pv*s;rr+=rv*c;ri-=rv*s}
     const qx=hr*pi-hi*pr,qz=hr*ri-hi*rr,E=hr*hr+hi*hi;Qx+=qx;Qz+=qz;Etot+=E;bins.push([norm(Math.atan2(-qz,-qx)/RAD+180),E])}
   let from=norm(Math.atan2(-Qz,-Qx)/RAD+180);if(from>180)from-=360;dirEst.push(from);if(dirEst.length>6)dirEst.shift();
   let cx=0,cy=0;for(const a of dirEst){cx+=Math.cos(a*RAD);cy+=Math.sin(a*RAD)}const R=Math.hypot(cx,cy)/dirEst.length;relFrom=Math.atan2(cy,cx)/RAD;
@@ -262,10 +276,11 @@ function estimateDir(hsFt){const settled=tStart==null?0:Math.max(0,Math.round((t
 function hsOf(cs){let e=0;for(const c of cs)e+=c[2]*c[2]/2;return 4*Math.sqrt(e)}
 function currentRel(){return $('dir').value==='auto'?relFrom:+$('dir').value}
 function applyDir(){const m=(180+currentRel())*RAD;if(Math.abs(m-MU)<2*RAD)return false;MU=m;if(arrow)arrow.setDirection(new THREE.Vector3(Math.cos(MU),0,Math.sin(MU)));return true}
-function rebuild(force){if(!force&&performance.now()-lastBuild<10000)return;const W=dftWindow();if(!W)return;lastBuild=performance.now();rawW=W;let c=buildComps(W);estimateDir(hsOf(c)*FT);if($('dir').value==='auto'&&applyDir())c=buildComps(W);
-  sets=[...sets.slice(-1).map(s=>({...s,from:s.w})),{c,pre:precompute(c),w:0,born:performance.now()}];waveText(c)}
+function rebuild(force){if(!force&&performance.now()-lastBuild<10000)return;const W=dftWindow();if(!W)return;lastBuild=performance.now();rawW=W;let c=buildComps(W);if($('dir').value==='auto'){estimateDir(hsOf(c)*FT);if(applyDir())c=buildComps(W)}
+  const mc=illPosed(c)>0.5?modelComps():null;seaMode=mc?'model':'data';if(mc){c=mc;rose.length&&0}const isModel=!!mc;
+  sets=[...sets.slice(-1).map(s=>({...s,from:s.w})),{c,pre:precompute(c),w:0,born:performance.now(),model:isModel}];waveText(c)}
 function mixComps(){const now=performance.now();if(sets.length>1){const nw=sets[sets.length-1];nw.w=Math.min(1,(now-nw.born)/3000);sets[0].w=1-nw.w;if(nw.w>=1)sets=[nw]}else if(sets.length)sets[0].w=1;
-  comps=[];for(const s of sets)for(const c of s.c)comps.push([c[0],c[1],c[2]*s.w,c[3]])}
+  comps=[];for(const s of sets){const m=s.model?modScale:1;for(const c of s.c)comps.push([c[0],c[1],c[2]*s.w*m,c[3],c[4],c[5],c[6]])}}
 $('kn').addEventListener('change',()=>{if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
 $('dir').addEventListener('change',()=>{applyDir();if(rawW){const c=buildComps(rawW);sets=[{c,pre:precompute(c),w:1,born:0}];waveText(c)}});
 
@@ -328,7 +343,7 @@ function buildShip(){
 let ok=true,scene,ship,seaGeo,seaBase,trailGeo,views=[],arrow;
 const CAB=new THREE.Vector3(100,20-9,sw(100)+0.6);
 function ortho(cam,W,H,hwid,hh){const a=W/H;let h=Math.max(hh,hwid/a);cam.left=-h*a;cam.right=h*a;cam.top=h;cam.bottom=-h;cam.updateProjectionMatrix()}
-function precompute(cs){if(!seaBase)return[];const n=seaBase.length/3,dx=Math.cos(MU),dz=Math.sin(MU);return cs.map(c=>{const a=new Float32Array(n);for(let i=0;i<n;i++)a[i]=c[0]*(dx*seaBase[3*i]+dz*seaBase[3*i+2]);return a})}
+function precompute(cs){if(!seaBase)return[];const n=seaBase.length/3;return cs.map(c=>{const dx=c[5]??Math.cos(MU),dz=c[6]??Math.sin(MU),a=new Float32Array(n);for(let i=0;i<n;i++)a[i]=c[0]*(dx*seaBase[3*i]+dz*seaBase[3*i+2]);return a})}
 const AZ0=Math.PI/4,EL0=Math.PI/4;let az=AZ0,el=EL0;
 try{
   scene=new THREE.Scene();scene.add(new THREE.HemisphereLight(0xe8f4ff,0x0b3a52,0.95));const sun=new THREE.DirectionalLight(0xffffff,0.75);sun.position.set(220,320,260);scene.add(sun);
@@ -351,9 +366,9 @@ const dummy=new THREE.Object3D(),tmp=new THREE.Vector3();
 function pose(o,t,E){o.position.set(at(D.sc,t)*E,at(D.hc,t)*E,at(D.wc,t)*E);o.rotation.set(at(D.roll,t)*RAD*E,0,at(D.pitch,t)*RAD*E,'ZXY')}
 function render3d(){const E=+$('exa').value;pose(ship,tNow,E);ship.updateMatrixWorld(true);
   const p=seaGeo.attributes.position.array,n=p.length/3,dx=Math.cos(MU),dz=Math.sin(MU);const cs=[],pr=[];
-  for(const s of sets)s.c.forEach((c,j)=>{if(s.w>0){cs.push([c[2]*E*s.w,c[1]*tNow+c[3]]);pr.push(s.pre[j])}});
+  for(const s of sets){const m=s.model?modScale:1;s.c.forEach((c,j)=>{if(s.w>0){cs.push([c[2]*E*s.w*m,c[1]*tNow+c[3],c[5]??dx,c[6]??dz]);pr.push(s.pre[j])}})}
   const Q=Math.min(1,0.6/Math.max(1e-9,steep(E)));
-  for(let i=0;i<n;i++){let y=0,h=0;for(let j=0;j<cs.length;j++){const th=cs[j][1]-pr[j][i],A=cs[j][0];y+=A*Math.cos(th);h+=A*Math.sin(th)}p[3*i]=seaBase[3*i]+Q*h*dx;p[3*i+1]=y;p[3*i+2]=seaBase[3*i+2]+Q*h*dz}
+  for(let i=0;i<n;i++){let y=0,hx=0,hz=0;for(let j=0;j<cs.length;j++){const th=cs[j][1]-pr[j][i],A=cs[j][0],sn=A*Math.sin(th);y+=A*Math.cos(th);hx+=sn*cs[j][2];hz+=sn*cs[j][3]}p[3*i]=seaBase[3*i]+Q*hx;p[3*i+1]=y;p[3*i+2]=seaBase[3*i+2]+Q*hz}
   seaGeo.attributes.position.needsUpdate=true;seaGeo.computeVertexNormals();
   const tp=trailGeo.attributes.position;for(let i=0;i<=60;i++){pose(dummy,tNow-6+i*0.1,E);dummy.updateMatrixWorld(true);tmp.copy(CAB).applyMatrix4(dummy.matrixWorld);tp.setXYZ(i,tmp.x,tmp.y,tmp.z)}tp.needsUpdate=true;
   const cw=CAB.clone().applyMatrix4(ship.matrixWorld);
@@ -364,8 +379,8 @@ function render3d(){const E=+$('exa').value;pose(ship,tNow,E);ship.updateMatrixW
 /* ---------- 2D cut views ---------- */
 function steep(E){let s=0;for(const c of comps)s+=c[0]*c[2]*E;return s}
 function waveCut(t,E,axis,from,to,n){const Q=Math.min(1,0.6/Math.max(1e-9,steep(E))); // returns displaced [s,y] along a line through pivot; axis 'x' (centreline) or 'z' (midships)
-  const dx=Math.cos(MU),dz=Math.sin(MU),d=axis==='x'?dx:dz,out=[];
-  for(let i=0;i<=n;i++){const s0=from+(to-from)*i/n;let y=0,h=0;for(const c of comps){const th=c[1]*t+c[3]-c[0]*d*s0,A=c[2]*E;y+=A*Math.cos(th);h+=A*Math.sin(th)}out.push([s0+Q*h*d,y])}return out}
+  const out=[];
+  for(let i=0;i<=n;i++){const s0=from+(to-from)*i/n;let y=0,h=0;for(const c of comps){const d=axis==='x'?(c[5]??Math.cos(MU)):(c[6]??Math.sin(MU)),th=c[1]*t+c[3]-c[0]*d*s0,A=c[2]*E;y+=A*Math.cos(th);h+=A*Math.sin(th)*d}out.push([s0+Q*h,y])}return out}
 function path(x,pts,map){pts.forEach((p,i)=>{const q=map(p[0],p[1]);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])})}
 function fillPts(x,pts,map,c){x.fillStyle=c;x.beginPath();path(x,pts,map);x.closePath();x.fill()}
 function water(x,W,H,wv,toPx,cutLbl){ // translucent water body below the cut line, crisp surface
@@ -428,8 +443,8 @@ async function fetchSea(lat,lon){seaAt=performance.now();seaPos=[lat,lon];
     const j=await(await fetch(u)).json();const c=j.current||{};if(c.wave_height==null)return;
     // use the swell's period when the swell carries most of the height (it dominates what a big ship feels)
     const swellDom=c.swell_wave_height!=null&&c.swell_wave_height>=(c.wind_wave_height||0);
-    sea={hs:c.wave_height,dir:c.wave_direction,T:swellDom&&c.swell_wave_period?c.swell_wave_period:c.wave_period,sh:c.swell_wave_height,sd:c.swell_wave_direction,sp:c.swell_wave_period,wh:c.wind_wave_height,time:c.time};
-    if(rawW){const cs=buildComps(rawW);sets=[{c:cs,pre:precompute(cs),w:1,born:0}];waveText(cs)}}catch(e){}}
+    sea={hs:c.wave_height,dir:c.wave_direction,T:swellDom&&c.swell_wave_period?c.swell_wave_period:c.wave_period,sh:c.swell_wave_height,sd:c.swell_wave_direction,sp:c.swell_wave_period,wh:c.wind_wave_height,wd:c.wind_wave_direction,wp:c.wind_wave_period,time:c.time};
+    if(rawW)rebuild(true)}catch(e){}}
 function maybeSea(p){if(!seaPos||performance.now()-seaAt>15*60000||hav(seaPos,p)>20000)fetchSea(p[0],p[1])}
 /* ---------- map ---------- */
 let map=null,trackLine=null,dots=null,shipMk=null,waveMk=null,follow=true,track=[],lastLog=0;
