@@ -73,6 +73,7 @@ details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;
 <div class="ctl">
 <select id="exa" aria-label="Vertical scale"><option value="1">True scale</option><option value="3">Motion and waves ×3</option><option value="5" selected>Motion and waves ×5</option><option value="10">Motion and waves ×10</option></select>
 <select id="kn" aria-label="Ship speed"><option value="gps" selected>Speed: from GPS</option><option value="0">Ship stopped</option><option value="10">10 kn</option><option value="14">14 kn</option><option value="17">17 kn</option><option value="21">21 kn</option></select>
+<select id="mount" aria-label="Phone orientation"><option value="180" selected>Phone: charging port toward bow</option><option value="auto">Phone orientation: auto (GPS + compass)</option><option value="0">Charging port toward stern</option><option value="90">Charging port toward port side</option><option value="270">Charging port toward starboard</option></select>
 <select id="dir" aria-label="Waves come from"><option value="auto" selected>Wave direction: from data</option><option value="25">Waves from 25° off stbd bow</option><option value="0">Waves from dead ahead</option><option value="-25">Waves from 25° off port bow</option><option value="90">Waves from starboard beam</option><option value="-90">Waves from port beam</option><option value="180">Waves from astern</option></select>
 <button id="reset">Reset view</button>
 </div>
@@ -140,11 +141,21 @@ function addSamples(rows){for(const r of rows){const t=r[0];if(lastT!=null&&t<la
   lastMsg=performance.now();process()}
 /* ---------- compass ---------- */
 let hdgVec=null,hdgAcc=null,hdgAt=0,calOff=0;try{calOff=+localStorage.getItem('shipcal')||0}catch(e){}
-function addHeading(h,acc){const b=(h+180)*RAD;// phone top points aft
+function addHeading(h,acc){const b=h*RAD;// bearing the top of the phone points
   const v=[Math.cos(b),Math.sin(b)];hdgVec=hdgVec?[hdgVec[0]*0.85+v[0]*0.15,hdgVec[1]*0.85+v[1]*0.15]:v;hdgAcc=acc;hdgAt=performance.now()}
 const norm=a=>((a%360)+360)%360;
 function rawHeading(){return hdgVec?norm(Math.atan2(hdgVec[1],hdgVec[0])/RAD):null}
-function compassHeading(){const r=rawHeading();return r==null?null:norm(r+calOff)}
+/* phone mount angle psi: bearing of the phone's top relative to the bow (180 = top aft, charging port to the bow) */
+let psi=180,psiVec=null;
+let PC=Math.cos(psi*RAD),PS=Math.sin(psi*RAD);
+function setPsi(v,why){psi=norm(v);PC=Math.cos(psi*RAD);PS=Math.sin(psi*RAD);try{localStorage.setItem('shippsi',psi)}catch(e){}restart();rose=rose.map(r=>r.map(()=>0));roseN=0;dirEst=[];if(why)msg(why)}
+function mountDesc(p){p=norm(p);return p>135&&p<225?'charging port toward the bow':p<45||p>315?'charging port toward the stern':p<180?'charging port toward port':'charging port toward starboard'}
+function autoMount(){if($('mount').value!=='auto')return;const r=rawHeading();if(r==null||!(gpsFresh()&&cog!=null&&sog>5))return;
+  const d=(r-cog)*RAD,v=[Math.cos(d),Math.sin(d)];psiVec=psiVec?[psiVec[0]*0.97+v[0]*0.03,psiVec[1]*0.97+v[1]*0.03]:v;
+  const est=norm(Math.atan2(psiVec[1],psiVec[0])/RAD);let diff=Math.abs(norm(est-psi));diff=Math.min(diff,360-diff);
+  if(diff>35&&Math.hypot(...psiVec)>0.8)setPsi(Math.round(est/5)*5,'The phone is lying with its '+mountDesc(est)+' — corrected automatically and restarted the model.')}
+$('mount').addEventListener('change',()=>{const v=$('mount').value;psiVec=null;if(v!=='auto')setPsi(+v,'Phone orientation set: '+mountDesc(+v)+'.')});
+function compassHeading(){const r=rawHeading();return r==null?null:norm(r-psi+calOff)}
 /* ---------- GPS ---------- */
 let fixes=[],sog=null,cog=null,lastFixAt=0;const KN=1.94384;
 function hav(a,b){const R=6371000,p1=a[0]*RAD,p2=b[0]*RAD,dp=p2-p1,dl=(b[1]-a[1])*RAD,h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
@@ -155,13 +166,13 @@ function addFix(p){// [lat, lon, accuracy m, speed m/s|null, course°|null, unix
   const old=fixes.find(f=>p[5]-f[5]<=75&&p[5]-f[5]>=40);
   if(old){const d=hav(old,p),dt=p[5]-old[5];if(d>Math.max(30,(old[2]+p[2])*0.7)){sog=d/dt*KN;cog=brg(old,p)}else{sog=d/dt*KN<1?0:sog}}
   else if(p[3]!=null){sog=p[3]*KN;if(p[4]!=null&&p[3]>1)cog=p[4]}
-  mapFix(p)}
+  mapFix(p);autoMount()}
 function gpsFresh(){return performance.now()-lastFixAt<20000}
 function shipHeading(){if(gpsFresh()&&cog!=null&&sog!=null&&sog>3)return cog;return compassHeading()}
 function headingSource(){return gpsFresh()&&cog!=null&&sog!=null&&sog>3?'gps':rawHeading()!=null?'compass':null}
 function speedKn(){const v=$('kn').value;if(v!=='gps')return+v;return gpsFresh()&&sog!=null?sog:17}
 $('calBtn').addEventListener('click',()=>{const tv=parseFloat($('tvHdg').value),r=rawHeading();if(isNaN(tv)){msg('Type the heading from the TV first.');return}if(r==null){msg('No compass data from the phone yet.');return}
-  calOff=norm(tv-r);if(calOff>180)calOff-=360;try{localStorage.setItem('shipcal',calOff)}catch(e){}msg('Compass corrected by '+(calOff>0?'+':'')+calOff.toFixed(0)+'°.')});
+  calOff=norm(tv-(r-psi));if(calOff>180)calOff-=360;try{localStorage.setItem('shipcal',calOff)}catch(e){}msg('Compass corrected by '+(calOff>0?'+':'')+calOff.toFixed(0)+'°.')});
 setTimeout(()=>{$('roseLeg').innerHTML=BANDS.map(b=>'<span><i style="background:'+b[2]+';height:10px"></i>'+(b[1]>50?b[0]+'+ ft':b[0]+'–'+b[1]+' ft')+'</span>').join('')+'<span>significant wave height</span>'},0);
 $('roseClr').addEventListener('click',()=>{rose=rose.map(r=>r.map(()=>0));roseN=0});
 $('calClr').addEventListener('click',()=>{calOff=0;try{localStorage.removeItem('shipcal')}catch(e){}$('tvHdg').value='';msg('Compass correction cleared.')});
@@ -177,7 +188,7 @@ function join(code){code=String(code||'').trim();if(!/^\d{4}$/.test(code)){msg('
 let demoSec=-1,lastGs=null;
 async function demo(){demoSec=-1;fixes=[];sog=cog=null;disconnect();restart();mode='demo';msg('');$('conn').textContent='Loading demo…';
   try{const txt=await(await fetch('demo.csv')).text();const rows=txt.trim().split('\n').slice(1).map(l=>l.split(',').map(Number));const per=rows[rows.length-1][0]+0.02,start=performance.now();let i=0,lap=0;
-    demoTimer=setInterval(()=>{const tt=(performance.now()-start)/1000,out=[];while(true){const r=rows[i];const t=r[0]+lap*per;if(t>tt)break;out.push([t,...r.slice(1)]);i++;if(i>=rows.length){i=0;lap++}}if(out.length){addSamples(out);addHeading(20+3*Math.sin(tt/40));const sec=Math.floor(tt);if(sec!==demoSec){demoSec=sec;const d=17*0.5144*sec/111320,b=(197+2*Math.sin(sec/90))*RAD;addFix([+(36.2+d*Math.cos(b)).toFixed(6),+(-73.6+d*Math.sin(b)/Math.cos(36.2*RAD)).toFixed(6),8,17*0.5144,197,Math.floor(Date.now()/1000)])}}},100)}
+    demoTimer=setInterval(()=>{const tt=(performance.now()-start)/1000,out=[];while(true){const r=rows[i];const t=r[0]+lap*per;if(t>tt)break;out.push([t,...r.slice(1)]);i++;if(i>=rows.length){i=0;lap++}}if(out.length){addSamples(out);addHeading(17+3*Math.sin(tt/40));const sec=Math.floor(tt);if(sec!==demoSec){demoSec=sec;const d=17*0.5144*sec/111320,b=(197+2*Math.sin(sec/90))*RAD;addFix([+(36.2+d*Math.cos(b)).toFixed(6),+(-73.6+d*Math.sin(b)/Math.cos(36.2*RAD)).toFixed(6),8,17*0.5144,197,Math.floor(Date.now()/1000)])}}},100)}
   catch(e){msg('Demo data did not load: '+e.message)}}
 $('joinBtn').addEventListener('click',()=>join($('room').value));
 $('room').addEventListener('keydown',e=>{if(e.key==='Enter')join($('room').value)});
@@ -193,7 +204,8 @@ function process(){const L=raw.l.t,G=raw.g.t;if(L.length<2||G.length<2)return;
   const end=Math.min(L[L.length-1],G[G.length-1]),hint={};
   while(gridNext<=end){const t=gridNext;
     const lx=interp('l','x',t,hint),ly=interp('l','y',t,hint),lz=interp('l','z',t,hint),gx=interp('g','x',t,hint),gy=interp('g','y',t,hint);
-    const su=F.su(-ly),sw=F.sw(-lx),he=F.he(lz),pi=F.pi(-gx)/RAD,ro=F.ro(-gy)/RAD;
+    // rotate phone axes into ship axes using the mount angle (psi=180 gives forward=-y, starboard=-x)
+    const su=F.su(ly*PC-lx*PS),sw=F.sw(ly*PS+lx*PC),he=F.he(lz),pi=F.pi(gy*PS+gx*PC)/RAD,ro=F.ro(gy*PC-gx*PS)/RAD;
     const hc=he-LEV.x*pi*RAD+LEV.s*ro*RAD,sc=su+LEV.z*pi*RAD,wc=sw-LEV.z*ro*RAD;
     if(tStart==null)tStart=t;D.t.push(t);D.hc.push(hc);D.sc.push(sc);D.wc.push(wc);D.pitch.push(pi);D.roll.push(ro);D.hp.push(he);D.wp.push(sw);gridNext=+(gridNext+DT).toFixed(4)}
   const keep=t=>{const k=raw[t].t.findIndex(v=>v>end-5);if(k>0)for(const c of['t','x','y','z'])raw[t][c].splice(0,k)};keep('l');keep('g');
@@ -221,7 +233,7 @@ function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+
   $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'. Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
 let lastBuild=0,dirEst=[],relFrom=25,dirSpread=null;
 // pitch/roll as surface-slope proxies (wave-buoy method): per frequency, the quadrature between heave and the slopes gives travel direction
-const BANDS=[[0,3,'#2e6f9e'],[3,6,'#3f9bd0'],[6,9,'#8fd3ff'],[9,12,'#ffd27a'],[12,99,'#ff7a3d']];
+const BANDS=[[0,4,'#2e6f9e'],[4,8,'#3f9bd0'],[8,12,'#8fd3ff'],[12,16,'#ffd27a'],[16,20,'#ff9f4a'],[20,99,'#e8505b']];
 let rose=Array.from({length:16},()=>BANDS.map(()=>0)),roseN=0,roseRel=false,tStart=null;
 function estimateDir(hsFt){const settled=tStart==null?0:Math.max(0,Math.round((tStart+30-D.t0)/DT));const n=Math.min(D.t.length-settled,180/DT);if(n<90/DT)return;
   const h=D.hc.slice(-n),p=D.pitch.slice(-n),r=D.roll.slice(-n);const mean=a=>a.reduce((x,v)=>x+v,0)/a.length,mh=mean(h),mp=mean(p),mr=mean(r),Tw=n*DT;

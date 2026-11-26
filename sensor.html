@@ -28,7 +28,7 @@ button.sec{background:#12375e;color:var(--ink);border:1px solid var(--line)}
 <div class="row"><span>Phone flat</span><b id="flat">…</b></div>
 <div class="row"><span>Sensor rate</span><b id="rate">…</b></div>
 <div class="row"><span>Gyro check</span><b id="gchk">checking…</b></div>
-<div class="row"><span>Compass (ship heading)</span><b id="hdg">…</b></div>
+<div class="row"><span>Compass</span><b id="hdg">…</b></div>
 <div class="row"><span>GPS</span><b id="gps">…</b></div>
 <div class="row"><span>Relay</span><b id="relay">connecting…</b></div>
 <div class="row"><span>Sent</span><b id="sent">0 s</b></div>
@@ -81,10 +81,10 @@ function send(){
       $('flat').textContent=tilt<5?'Yes ('+tilt.toFixed(1)+'° tilt)':'Tilted '+tilt.toFixed(0)+'°';$('flat').className=tilt<5?'ok':'warn';
       gSum=[0,0,0];gN=0}
     $('sent').textContent=Math.round((now-started)/1000)+' s';
-    {const cx=corr('x'),cy=corr('y'),okx=(now-started)>20000&&Math.abs(cx)>0.3,oky=(now-started)>20000&&Math.abs(cy)>0.3,ok=okx&&oky;if(okx)sx=cx>0?1:-1;if(oky)sy=cy>0?1:-1;
+    {const cx=corr('x'),cy=corr('y'),okx=(now-started)>40000&&Math.abs(cx)>0.1,oky=(now-started)>40000&&Math.abs(cy)>0.1,ok=okx&&oky;if(okx)sx=cx>0?1:-1;if(oky)sy=cy>0?1:-1;
      $('gchk').textContent=ok?(sx<0||sy<0?'corrected ('+(sx<0?'pitch':'')+(sx<0&&sy<0?' + ':'')+(sy<0?'roll':'')+' flipped)':'OK'):'checking… ('+Math.abs(cx).toFixed(2)+', '+Math.abs(cy).toFixed(2)+')';$('gchk').className=ok?'ok':'warn'}
     // the phone's top points aft, so the ship's bow is 180° from the phone's compass heading
-    if(hdgRaw!=null){$('hdg').textContent=Math.round((hdgRaw+180)%360)+'° magnetic'+(hdgAcc!=null&&hdgAcc>=0?' (±'+Math.round(hdgAcc)+'°)':'');$('hdg').className=hdgAcc!=null&&hdgAcc>25?'warn':'ok'}else{$('hdg').textContent='not available';$('hdg').className='warn'}}
+    if(hdgRaw!=null){$('hdg').textContent='top points '+Math.round(hdgRaw)+'° mag'+(hdgAcc!=null&&hdgAcc>=0?' (±'+Math.round(hdgAcc)+'°)':'');$('hdg').className=hdgAcc!=null&&hdgAcc>25?'warn':'ok'}else{$('hdg').textContent='not available';$('hdg').className='warn'}}
   setTimeout(send,100)}
 async function keepAwake(){try{wakeLock=await navigator.wakeLock.request('screen');$('wake').textContent='Yes';$('wake').className='ok'}catch(e){$('wake').textContent='Set Auto-Lock to Never';$('wake').className='warn'}}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&running)keepAwake()});
