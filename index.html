@@ -71,7 +71,7 @@ details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;
 </div></div>
 <div class="band" style="padding-top:0">
 <div class="ctl">
-<select id="exa" aria-label="Vertical scale"><option value="1">True scale</option><option value="3">Motion and waves ×3</option><option value="5" selected>Motion and waves ×5</option><option value="10">Motion and waves ×10</option></select>
+<select id="exa" aria-label="Vertical scale"><option value="1" selected>True scale</option><option value="3">Motion and waves ×3</option><option value="5">Motion and waves ×5</option><option value="10">Motion and waves ×10</option></select>
 <select id="kn" aria-label="Ship speed"><option value="gps" selected>Speed: from GPS</option><option value="0">Ship stopped</option><option value="10">10 kn</option><option value="14">14 kn</option><option value="17">17 kn</option><option value="21">21 kn</option></select>
 <select id="mount" aria-label="Phone orientation"><option value="180" selected>Phone: charging port toward bow</option><option value="auto">Phone orientation: auto (GPS + compass)</option><option value="0">Charging port toward stern</option><option value="90">Charging port toward port side</option><option value="270">Charging port toward starboard</option></select>
 <select id="dir" aria-label="Waves come from"><option value="auto" selected>Wave direction: from data</option><option value="25">Waves from 25° off stbd bow</option><option value="0">Waves from dead ahead</option><option value="-25">Waves from 25° off port bow</option><option value="90">Waves from starboard beam</option><option value="-90">Waves from port beam</option><option value="180">Waves from astern</option></select>
@@ -228,12 +228,16 @@ function dftWindow(){const n=Math.min(D.t.length,180/DT);if(n<40/DT)return null;
   return{tw0,c:out}}
 /* encounter: we = |w - A w^2| with A = U cos(beta)/g (A>0 when waves travel the same way as the ship).
    Following seas can have up to three true frequencies for one felt frequency; pick the one closest to the ocean model's period, else the longest wave. */
-function trueOmega(we,A,wm){if(Math.abs(A)<1e-6)return we;const r=[];
+function trueRoots(we,A){if(Math.abs(A)<1e-6)return[we];const r=[];
   for(const sg of[1,-1]){const D=1-4*A*sg*we;if(D<0)continue;for(const pm of[1,-1]){const w=(1+pm*Math.sqrt(D))/(2*A);if(w>0.05&&w<4)r.push(w)}}
-  if(!r.length)return 1/(2*Math.abs(A));if(wm)return r.reduce((b,w)=>Math.abs(w-wm)<Math.abs(b-wm)?w:b);return Math.min(...r)}
+  return r.length?r:[1/(2*Math.abs(A))]}
+// the measured heave must come from a wave the hull responds to: score each candidate by heave response, nudged toward the ocean model's period
+function trueOmega(we,A,wm,resp){const r=trueRoots(we,A);if(r.length===1)return r[0];
+  return r.reduce((b,w)=>{const sc=v=>Math.abs(resp(v))*(wm?Math.exp(-(((v-wm)/(0.5*wm))**2)):1);return sc(w)>sc(b)?w:b})}
 function buildComps(W){const U=speedKn()*0.5144,dx=Math.cos(MU),dz=Math.sin(MU),c=-dx*U;
   const A=dx*U/g,wm=sea.T?2*Math.PI/sea.T:null;
-  return W.c.map(([we,a,p])=>{const w=trueOmega(we,A,wm);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
+  const resp=w=>{const k=w*w/g;return sinc(k*dx*LW/2)*sinc(k*dz*BW/2)};
+  return W.c.map(([we,a,p])=>{const w=trueOmega(we,A,wm,resp);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
     return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w]})}
 function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
   const knv=speedKn(),kn=$('kn').value==='gps'&&!(gpsFresh()&&sog!=null)?'17 (no GPS yet)':String(Math.round(knv)),rel=currentRel(),dirTxt=Math.abs(rel)<8?'dead ahead':Math.abs(rel)>172?'astern':Math.round(Math.abs(rel))+'° off '+(rel>0?'starboard':'port')+(Math.abs(rel)<90?' bow':Math.abs(rel)>90?' quarter':' beam')+($('dir').value==='auto'?' (from data)':'');
@@ -348,7 +352,8 @@ function pose(o,t,E){o.position.set(at(D.sc,t)*E,at(D.hc,t)*E,at(D.wc,t)*E);o.ro
 function render3d(){const E=+$('exa').value;pose(ship,tNow,E);ship.updateMatrixWorld(true);
   const p=seaGeo.attributes.position.array,n=p.length/3,dx=Math.cos(MU),dz=Math.sin(MU);const cs=[],pr=[];
   for(const s of sets)s.c.forEach((c,j)=>{if(s.w>0){cs.push([c[2]*E*s.w,c[1]*tNow+c[3]]);pr.push(s.pre[j])}});
-  for(let i=0;i<n;i++){let y=0,h=0;for(let j=0;j<cs.length;j++){const th=cs[j][1]-pr[j][i],A=cs[j][0];y+=A*Math.cos(th);h+=A*Math.sin(th)}p[3*i]=seaBase[3*i]+h*dx;p[3*i+1]=y;p[3*i+2]=seaBase[3*i+2]+h*dz}
+  const Q=Math.min(1,0.6/Math.max(1e-9,steep(E)));
+  for(let i=0;i<n;i++){let y=0,h=0;for(let j=0;j<cs.length;j++){const th=cs[j][1]-pr[j][i],A=cs[j][0];y+=A*Math.cos(th);h+=A*Math.sin(th)}p[3*i]=seaBase[3*i]+Q*h*dx;p[3*i+1]=y;p[3*i+2]=seaBase[3*i+2]+Q*h*dz}
   seaGeo.attributes.position.needsUpdate=true;seaGeo.computeVertexNormals();
   const tp=trailGeo.attributes.position;for(let i=0;i<=60;i++){pose(dummy,tNow-6+i*0.1,E);dummy.updateMatrixWorld(true);tmp.copy(CAB).applyMatrix4(dummy.matrixWorld);tp.setXYZ(i,tmp.x,tmp.y,tmp.z)}tp.needsUpdate=true;
   const cw=CAB.clone().applyMatrix4(ship.matrixWorld);
@@ -357,9 +362,10 @@ function render3d(){const E=+$('exa').value;pose(ship,tNow,E);ship.updateMatrixW
     v.r.render(scene,v.cam);const q=cw.clone().project(v.cam);v.l.style.left=((q.x+1)/2*r.width)+'px';v.l.style.top=((1-q.y)/2*r.height)+'px'}}
 
 /* ---------- 2D cut views ---------- */
-function waveCut(t,E,axis,from,to,n){ // returns displaced [s,y] along a line through pivot; axis 'x' (centreline) or 'z' (midships)
+function steep(E){let s=0;for(const c of comps)s+=c[0]*c[2]*E;return s}
+function waveCut(t,E,axis,from,to,n){const Q=Math.min(1,0.6/Math.max(1e-9,steep(E))); // returns displaced [s,y] along a line through pivot; axis 'x' (centreline) or 'z' (midships)
   const dx=Math.cos(MU),dz=Math.sin(MU),d=axis==='x'?dx:dz,out=[];
-  for(let i=0;i<=n;i++){const s0=from+(to-from)*i/n;let y=0,h=0;for(const c of comps){const th=c[1]*t+c[3]-c[0]*d*s0,A=c[2]*E;y+=A*Math.cos(th);h+=A*Math.sin(th)}out.push([s0+h*d,y])}return out}
+  for(let i=0;i<=n;i++){const s0=from+(to-from)*i/n;let y=0,h=0;for(const c of comps){const th=c[1]*t+c[3]-c[0]*d*s0,A=c[2]*E;y+=A*Math.cos(th);h+=A*Math.sin(th)}out.push([s0+Q*h*d,y])}return out}
 function path(x,pts,map){pts.forEach((p,i)=>{const q=map(p[0],p[1]);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])})}
 function fillPts(x,pts,map,c){x.fillStyle=c;x.beginPath();path(x,pts,map);x.closePath();x.fill()}
 function water(x,W,H,wv,toPx,cutLbl){ // translucent water body below the cut line, crisp surface
