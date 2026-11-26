@@ -95,6 +95,7 @@ details{margin-top:14px;color:var(--mut)}summary{cursor:pointer;font-weight:600;
 <div class="maptxt">
 <h2>Track</h2>
 <p class="lede" id="gpsLine">Waiting for GPS from the phone…</p>
+<p class="lede" style="font-size:13px">Ocean model: <a href="https://open-meteo.com/" style="color:var(--sw)">Open-Meteo</a> marine forecast at your position, refreshed every 15 min.</p>
 <p class="lede" style="font-size:14px">A dot is logged every 30 s, colored by the significant wave height at that moment (same colors as the rose). Tap a dot for details. The track is saved in this browser.</p>
 <div class="ctl" style="margin:10px 0 0"><button id="follow" class="on">Follow ship</button><button id="csv">Download CSV</button><button id="trkClr">Clear track</button></div>
 </div></div>
@@ -166,7 +167,7 @@ function addFix(p){// [lat, lon, accuracy m, speed m/s|null, course°|null, unix
   const old=fixes.find(f=>p[5]-f[5]<=75&&p[5]-f[5]>=40);
   if(old){const d=hav(old,p),dt=p[5]-old[5];if(d>Math.max(30,(old[2]+p[2])*0.7)){sog=d/dt*KN;cog=brg(old,p)}else{sog=d/dt*KN<1?0:sog}}
   else if(p[3]!=null){sog=p[3]*KN;if(p[4]!=null&&p[3]>1)cog=p[4]}
-  mapFix(p);autoMount()}
+  mapFix(p);autoMount();maybeSea(p)}
 function gpsFresh(){return performance.now()-lastFixAt<20000}
 function shipHeading(){if(gpsFresh()&&cog!=null&&sog!=null&&sog>3)return cog;return compassHeading()}
 function headingSource(){return gpsFresh()&&cog!=null&&sog!=null&&sog>3?'gps':rawHeading()!=null?'compass':null}
@@ -225,12 +226,18 @@ const sinc=u=>Math.abs(u)<1e-6?1:Math.sin(u)/u;
 function dftWindow(){const n=Math.min(D.t.length,180/DT);if(n<40/DT)return null;const x=D.hc.slice(-n),tw0=D.t[D.t.length-n],m=x.reduce((p,v)=>p+v,0)/n,Tw=n*DT,out=[];
   for(let j=Math.ceil(0.07*Tw);j<=Math.floor(0.2*Tw);j++){const f=j/Tw,w=2*Math.PI*f*DT;let re=0,im=0;for(let i=0;i<n;i++){const v=x[i]-m;re+=v*Math.cos(w*i);im-=v*Math.sin(w*i)}out.push([2*Math.PI*f,2*Math.hypot(re,im)/n,Math.atan2(im,re)])}
   return{tw0,c:out}}
+/* encounter: we = |w - A w^2| with A = U cos(beta)/g (A>0 when waves travel the same way as the ship).
+   Following seas can have up to three true frequencies for one felt frequency; pick the one closest to the ocean model's period, else the longest wave. */
+function trueOmega(we,A,wm){if(Math.abs(A)<1e-6)return we;const r=[];
+  for(const sg of[1,-1]){const D=1-4*A*sg*we;if(D<0)continue;for(const pm of[1,-1]){const w=(1+pm*Math.sqrt(D))/(2*A);if(w>0.05&&w<4)r.push(w)}}
+  if(!r.length)return 1/(2*Math.abs(A));if(wm)return r.reduce((b,w)=>Math.abs(w-wm)<Math.abs(b-wm)?w:b);return Math.min(...r)}
 function buildComps(W){const U=speedKn()*0.5144,dx=Math.cos(MU),dz=Math.sin(MU),c=-dx*U;
-  return W.c.map(([we,a,p])=>{const w=U===0||Math.abs(c)<1e-6?we:(-1+Math.sqrt(Math.max(0,1+4*(c/g)*we)))/(2*c/g);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
+  const A=dx*U/g,wm=sea.T?2*Math.PI/sea.T:null;
+  return W.c.map(([we,a,p])=>{const w=trueOmega(we,A,wm);const k=w*w/g,h=sinc(k*dx*LW/2)*sinc(k*dz*BW/2);
     return[k,we,a/Math.max(Math.abs(h),0.4),p-we*W.tw0+(h<0?Math.PI:0),w]})}
 function waveText(cs){if(!cs.length)return;let e=0,b=cs[0];for(const c of cs){e+=c[2]*c[2]/2;if(c[2]>b[2])b=c}
   const knv=speedKn(),kn=$('kn').value==='gps'&&!(gpsFresh()&&sog!=null)?'17 (no GPS yet)':String(Math.round(knv)),rel=currentRel(),dirTxt=Math.abs(rel)<8?'dead ahead':Math.abs(rel)>172?'astern':Math.round(Math.abs(rel))+'° off '+(rel>0?'starboard':'port')+(Math.abs(rel)<90?' bow':Math.abs(rel)>90?' quarter':' beam')+($('dir').value==='auto'?' (from data)':'');
-  $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'. Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
+  $('wstat').textContent='Sea (estimate, at '+(kn==='0'?'a stopped ship':kn+' kn')+'): about '+Math.round(4*Math.sqrt(e)*FT)+' ft significant height, '+(2*Math.PI/b[4]).toFixed(1)+' s true period, '+Math.round(2*Math.PI/b[0]*FT)+' ft long, from '+dirTxt+'.'+(sea.T?' Wave length matched to the ocean model\'s '+Math.round(sea.T)+' s period.':'')+' Rebuilt from the last '+Math.round(Math.min(D.t.length*DT,180))+' s.'}
 let lastBuild=0,dirEst=[],relFrom=25,dirSpread=null;
 // pitch/roll as surface-slope proxies (wave-buoy method): per frequency, the quadrature between heave and the slopes gives travel direction
 const BANDS=[[0,4,'#2e6f9e'],[4,8,'#3f9bd0'],[8,12,'#8fd3ff'],[12,16,'#ffd27a'],[16,20,'#ff9f4a'],[20,99,'#e8505b']];
@@ -408,6 +415,16 @@ function trace(id,series,mult,sc0,ticks,unit){const[x,W,H]=fit2($(id));x.clearRe
   x.fillStyle='#9fb8d0';x.font='13px Barlow,sans-serif';for(const m of[ticks[0],0,ticks[ticks.length-1]])x.fillText((m>0?'+':'')+m+unit,6,mid-m*sc-4);
   if(D.t.length<2)return;const i0=Math.max(0,Math.floor((t0-D.t0)/DT)),i1=Math.min(D.t.length-1,Math.ceil((t1-D.t0)/DT));
   for(const[a,c,w]of series){x.strokeStyle=c;x.lineWidth=w;x.beginPath();for(let i=i0;i<=i1;i++){const px=sx(D.t[i]),py=mid-a[i]*mult*sc;i>i0?x.lineTo(px,py):x.moveTo(px,py)}x.stroke()}}
+/* ---------- ocean model (Open-Meteo marine, at the ship's GPS position) ---------- */
+let sea={},seaAt=0,seaPos=null;
+async function fetchSea(lat,lon){seaAt=performance.now();seaPos=[lat,lon];
+  try{const u='https://marine-api.open-meteo.com/v1/marine?latitude='+lat.toFixed(3)+'&longitude='+lon.toFixed(3)+'&current=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period&length_unit=imperial&timezone=auto';
+    const j=await(await fetch(u)).json();const c=j.current||{};if(c.wave_height==null)return;
+    // use the swell's period when the swell carries most of the height (it dominates what a big ship feels)
+    const swellDom=c.swell_wave_height!=null&&c.swell_wave_height>=(c.wind_wave_height||0);
+    sea={hs:c.wave_height,dir:c.wave_direction,T:swellDom&&c.swell_wave_period?c.swell_wave_period:c.wave_period,sh:c.swell_wave_height,sd:c.swell_wave_direction,sp:c.swell_wave_period,wh:c.wind_wave_height,time:c.time};
+    if(rawW){const cs=buildComps(rawW);sets=[{c:cs,pre:precompute(cs),w:1,born:0}];waveText(cs)}}catch(e){}}
+function maybeSea(p){if(!seaPos||performance.now()-seaAt>15*60000||hav(seaPos,p)>20000)fetchSea(p[0],p[1])}
 /* ---------- map ---------- */
 let map=null,trackLine=null,dots=null,shipMk=null,waveMk=null,follow=true,track=[],lastLog=0;
 try{track=JSON.parse(localStorage.getItem('shiptrack')||'[]')}catch(e){track=[]}
@@ -419,7 +436,7 @@ function initMap(){if(map||typeof L==='undefined')return;
   map.on('dragstart',()=>{follow=false;$('follow').classList.remove('on')})}
 function esc(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function addDot(p){if(!dots)return;L.circleMarker([p.lat,p.lon],{radius:6,color:'#0a2540',weight:1,fillColor:bandColor(p.hs),fillOpacity:.95}).bindPopup(
-  '<b>'+esc(new Date(p.t).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))+'</b><br>Waves '+esc(p.hs.toFixed(1))+' ft significant'+(p.wf!=null?', from '+esc(Math.round(p.wf))+'°':'')+'<br>Cabin heave ±'+esc(p.cab.toFixed(1))+' ft<br>'+(p.sog!=null?esc(p.sog.toFixed(1))+' kn':'')+(p.hdg!=null?' · heading '+esc(Math.round(p.hdg))+'°':'')).addTo(dots)}
+  '<b>'+esc(new Date(p.t).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))+'</b><br>Waves '+esc(p.hs.toFixed(1))+' ft significant'+(p.wf!=null?', from '+esc(Math.round(p.wf))+'°':'')+(p.mhs!=null?'<br>Ocean model '+esc(p.mhs.toFixed(1))+' ft from '+esc(Math.round(p.mdir))+'°':'')+'<br>Cabin heave ±'+esc(p.cab.toFixed(1))+' ft<br>'+(p.sog!=null?esc(p.sog.toFixed(1))+' kn':'')+(p.hdg!=null?' · heading '+esc(Math.round(p.hdg))+'°':'')).addTo(dots)}
 function svgShip(c){return '<svg width="28" height="28" viewBox="-14 -14 28 28"><path d="M0,-13 Q4,-6 4,0 L4,12 L-4,12 L-4,0 Q-4,-6 0,-13Z" fill="#fff" stroke="#0a2540" stroke-width="1.5"/><circle cx="0" cy="-6" r="2" fill="'+c+'"/></svg>'}
 function mapFix(p){initMap();if(!map)return;const ll=[p[0],p[1]],hd=shipHeading();
   if(!shipMk){shipMk=L.marker(ll,{icon:L.divIcon({className:'shipicon',html:'<div id="shipRot">'+svgShip('#ff7a3d')+'</div>',iconSize:[28,28],iconAnchor:[14,14]}),zIndexOffset:1000}).addTo(map);
@@ -429,12 +446,12 @@ function mapFix(p){initMap();if(!map)return;const ll=[p[0],p[1]],hd=shipHeading(
   if(follow)map.panTo(ll,{animate:false});
   // log a dot every 30 s once the sea estimate exists
   const now=Date.now();if(sets.length&&now-lastLog>30000&&p[2]<150){lastLog=now;const hsFt=hsOf(sets[sets.length-1].c)*FT,cab=rms(D.hp,60/DT)*FT;
-    const rec={t:now,lat:p[0],lon:p[1],hs:+hsFt.toFixed(2),cab:+cab.toFixed(2),sog:sog==null?null:+sog.toFixed(1),hdg:hd==null?null:+hd.toFixed(0),wf:hd==null?null:+norm(hd+currentRel()).toFixed(0)};
+    const rec={t:now,lat:p[0],lon:p[1],hs:+hsFt.toFixed(2),cab:+cab.toFixed(2),sog:sog==null?null:+sog.toFixed(1),hdg:hd==null?null:+hd.toFixed(0),wf:hd==null?null:+norm(hd+currentRel()).toFixed(0),mhs:sea.hs??null,mdir:sea.dir??null};
     track.push(rec);if(track.length>3000)track.shift();trackLine.addLatLng([rec.lat,rec.lon]);addDot(rec);try{localStorage.setItem('shiptrack',JSON.stringify(track))}catch(e){}}
   $('gpsLine').textContent='Position '+Math.abs(p[0]).toFixed(3)+'°'+(p[0]>=0?'N':'S')+' '+Math.abs(p[1]).toFixed(3)+'°'+(p[1]>=0?'E':'W')+' (±'+p[2]+' m)'+(sog!=null?' · speed '+sog.toFixed(1)+' kn':'')+(cog!=null&&sog>3?' · course '+Math.round(cog)+'°':'')+' · '+track.length+' logged points'}
 $('follow').addEventListener('click',()=>{follow=!follow;$('follow').classList.toggle('on',follow);if(follow&&shipMk)map.panTo(shipMk.getLatLng())});
 $('trkClr').addEventListener('click',()=>{track=[];try{localStorage.removeItem('shiptrack')}catch(e){}if(trackLine)trackLine.setLatLngs([]);if(dots)dots.clearLayers()});
-$('csv').addEventListener('click',()=>{const rows=[['time','lat','lon','sig_wave_height_ft','cabin_heave_rms_ft','speed_kn','heading_deg','waves_from_deg'],...track.map(p=>[new Date(p.t).toISOString(),p.lat,p.lon,p.hs,p.cab,p.sog??'',p.hdg??'',p.wf??''])];
+$('csv').addEventListener('click',()=>{const rows=[['time','lat','lon','sig_wave_height_ft','cabin_heave_rms_ft','speed_kn','heading_deg','waves_from_deg','model_wave_height_ft','model_waves_from_deg'],...track.map(p=>[new Date(p.t).toISOString(),p.lat,p.lon,p.hs,p.cab,p.sog??'',p.hdg??'',p.wf??'',p.mhs??'',p.mdir??''])];
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rows.map(r=>r.join(',')).join('\n')],{type:'text/csv'}));a.download='ship-track.csv';a.click()});
 setTimeout(initMap,0);
 function drawRose(){const[x,W,H]=fit2($('rose'));x.clearRect(0,0,W,H);const cx=W/2,cy=H/2,R=Math.min(W,H)/2-22;
@@ -451,6 +468,10 @@ function drawRose(){const[x,W,H]=fit2($('rose'));x.clearRect(0,0,W,H);const cx=W
   x.font='700 15px Barlow,sans-serif';x.textAlign='center';
   if(useCompass)for(const[l,a]of[['N',0],['E',90],['S',180],['W',270]]){const[p,q]=P(a,R+12);x.fillStyle=l==='N'?'#ff7a3d':'#9fb8d0';x.fillText(l,p,q)}
   else{const[p,q]=P(0,R+12);x.fillStyle='#9fb8d0';x.fillText('bow',p,q)}
+  // ocean-model wave direction for comparison: dashed outline arrow
+  if(sea.dir!=null&&useCompass){const[a1,b1]=P(sea.dir,R+2),[a2,b2]=P(sea.dir,R*0.45);x.setLineDash([5,4]);x.strokeStyle='#ffd27a';x.lineWidth=3;x.beginPath();x.moveTo(a1,b1);x.lineTo(a2,b2);x.stroke();x.setLineDash([]);
+    const an=Math.atan2(b2-b1,a2-a1);x.beginPath();x.moveTo(a2,b2);x.lineTo(a2-Math.cos(an-0.45)*12,b2-Math.sin(an-0.45)*12);x.moveTo(a2,b2);x.lineTo(a2-Math.cos(an+0.45)*12,b2-Math.sin(an+0.45)*12);x.stroke();
+    const[l1,l2]=P(sea.dir,R*0.4);x.font='700 11px Barlow,sans-serif';x.textAlign='center';x.textBaseline='middle';x.fillStyle='#0a2540';x.fillRect(l1-19,l2-7,38,14);x.fillStyle='#ffd27a';x.fillText('model',l1,l2)}
   // current wave direction: arrow from the rim toward the ship
   if(sets.length){const wb=(useCompass?hd:0)+currentRel(),[a1,b1]=P(wb,R+2),[a2,b2]=P(wb,Math.min(34,R*0.3));x.lineCap='round';
     x.strokeStyle='#0a2540';x.lineWidth=9;x.beginPath();x.moveTo(a1,b1);x.lineTo(a2,b2);x.stroke();arrowLine(x,a1,b1,a2,b2,'#ffffff',5);
@@ -461,7 +482,7 @@ function drawRose(){const[x,W,H]=fit2($('rose'));x.clearRect(0,0,W,H);const cx=W
   const src=headingSource(),hdTxt=hd==null?null:Math.round(hd).toString().padStart(3,'0')+'° '+pt(hd)+(src==='gps'?' (GPS course)':calOff?' (TV-corrected compass)':' (magnetic compass)');
   const rel=currentRel(),cur=sets.length?(hd==null?Math.round(Math.abs(rel))+'° '+(rel>=0?'starboard':'port')+' of the bow':Math.round(norm(hd+rel)).toString().padStart(3,'0')+'° '+pt(hd+rel))+($('dir').value==='auto'&&dirSpread!=null?' (±'+Math.min(90,Math.round(dirSpread))+'°)':''):null;
   $('roseHead').textContent=hdTxt?'Heading '+hdTxt:'Wave rose (no compass yet)';
-  $('roseLine').textContent=(cur?'Waves now mainly from '+cur+'. ':'Waves: building… ')+(roseN?'Rose built from '+Math.round(roseN*10/60)+' min of data.':'The rose starts after 90 s.')+(hdgAcc!=null&&hdgAcc>25?' Compass accuracy is poor (±'+Math.round(hdgAcc)+'°).':'')}
+  $('roseLine').textContent=(cur?'Waves now mainly from '+cur+'. ':'Waves: building… ')+(roseN?'Rose built from '+Math.round(roseN*10/60)+' min of data.':'The rose starts after 90 s.')+(sea.hs!=null?' Ocean model here: '+sea.hs.toFixed(1)+' ft, '+Math.round(sea.T)+' s, from '+Math.round(sea.dir).toString().padStart(3,'0')+'° '+pt(sea.dir)+(sea.sh!=null?' (swell '+sea.sh.toFixed(1)+' ft from '+pt(sea.sd)+')':'')+'.':'')+(hdgAcc!=null&&hdgAcc>25?' Compass accuracy is poor (±'+Math.round(hdgAcc)+'°).':'')}
 function arrowLine(x,a1,b1,a2,b2,c,w){x.strokeStyle=c;x.fillStyle=c;x.lineWidth=w;x.lineCap='round';x.beginPath();x.moveTo(a1,b1);x.lineTo(a2,b2);x.stroke();const an=Math.atan2(b2-b1,a2-a1),L=12;x.beginPath();x.moveTo(a2+Math.cos(an)*4,b2+Math.sin(an)*4);x.lineTo(a2-Math.cos(an-0.45)*L,b2-Math.sin(an-0.45)*L);x.lineTo(a2-Math.cos(an+0.45)*L,b2-Math.sin(an+0.45)*L);x.closePath();x.fill()}
 let tNow=0,lastFrame=null,lastStats=0;
 function frame(ts){const dt=lastFrame==null?0:(ts-lastFrame)/1000;lastFrame=ts;
